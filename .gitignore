@@ -1,0 +1,38 @@
+# Xcode
+DerivedData/
+build/
+*.xcworkspace/xcuserdata
+xcuserdata/
+*.xcuserstate
+*.xccheckout
+
+# Swift Packages
+/.build/
+Packages/
+
+# CocoaPods
+Pods/
+podfile.lock
+
+# Carthage
+Carthage/
+
+# SPM
+.swiftpm/xcode
+
+# macOS
+.DS_Store
+
+# Asset junk
+*.ipa
+*.dSYM
+*.app
+*.framework
+
+# SwiftUI previews
+*.preview-thumbnails
+
+# Project-specific
+ProjectHaloLogs/
+CapturedImages/
+Temp/
