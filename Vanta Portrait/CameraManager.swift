@@ -1,0 +1,212 @@
+import Foundation
+import AVFoundation
+import Vision
+import Combine
+import AppKit
+
+@MainActor
+final class CameraManager: NSObject, ObservableObject {
+    let session = AVCaptureSession()
+
+    @Published var poseData: PoseData?
+    @Published var lastCaptureDate: Date?
+    @Published var countdownActive = false
+
+    private let photoOutput = AVCapturePhotoOutput()
+    private let videoOutput = AVCaptureVideoDataOutput()
+    private let sessionQueue = DispatchQueue(label: "camera.session.queue")
+    private let sampleBufferQueue = DispatchQueue(label: "camera.sample.queue")
+    private lazy var photoDelegate = PhotoCaptureDelegate(owner: self)
+    private lazy var videoDelegate = VideoDataDelegate(owner: self)
+
+    private var burstImages: [NSImage] = []
+    private var burstCompletion: (([NSImage]) -> Void)?
+    private var expectedBurstCount = 0
+    private var processedBurstCount = 0
+    private var isConfigured = false
+
+    override init() {
+        super.init()
+        requestCameraAccessIfNeeded()
+    }
+
+    private func requestCameraAccessIfNeeded() {
+        switch AVCaptureDevice.authorizationStatus(for: .video) {
+        case .authorized:
+            configureSession()
+        case .notDetermined:
+            AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
+                guard let self else { return }
+                if granted {
+                    self.configureSession()
+                } else {
+                    print("Camera access was denied by the user.")
+                }
+            }
+        default:
+            print("Camera access not granted. Update privacy permissions to capture photos.")
+        }
+    }
+
+    private func configureSession() {
+        sessionQueue.async { [weak self] in
+            guard let self, !self.isConfigured else { return }
+
+            self.session.beginConfiguration()
+            self.session.sessionPreset = .high
+
+            guard let device = AVCaptureDevice.default(for: .video),
+                  let input = try? AVCaptureDeviceInput(device: device),
+                  self.session.canAddInput(input) else {
+                print("Unable to create camera input")
+                self.session.commitConfiguration()
+                return
+            }
+            self.session.addInput(input)
+
+            if self.session.canAddOutput(self.photoOutput) {
+                self.session.addOutput(self.photoOutput)
+                if #available(macOS 13.0, iOS 16.0, *) {
+                    self.photoOutput.maxPhotoDimensions = self.photoOutput.maxSupportedPhotoDimensions
+                } else {
+                    self.photoOutput.isHighResolutionCaptureEnabled = true
+                }
+            }
+
+            if self.session.canAddOutput(self.videoOutput) {
+                self.videoOutput.alwaysDiscardsLateVideoFrames = true
+                self.videoOutput.setSampleBufferDelegate(self.videoDelegate, queue: self.sampleBufferQueue)
+                self.session.addOutput(self.videoOutput)
+            }
+
+            self.session.commitConfiguration()
+            self.isConfigured = true
+            self.session.startRunning()
+        }
+    }
+
+    func captureBurst(count: Int = 3, completion: @escaping ([NSImage]) -> Void) {
+        guard count > 0 else {
+            completion([])
+            return
+        }
+        guard burstCompletion == nil else { return }
+
+        burstImages = []
+        expectedBurstCount = count
+        processedBurstCount = 0
+        burstCompletion = completion
+
+        sessionQueue.async { [weak self] in
+            guard let self else { return }
+            guard self.isConfigured else {
+                self.failBurstCapture(reason: "Camera session is not configured.")
+                return
+            }
+            guard self.session.isRunning else {
+                self.failBurstCapture(reason: "Camera session is not running.")
+                return
+            }
+            guard self.photoOutput.connection(with: .video) != nil else {
+                self.failBurstCapture(reason: "Photo output has no active video connection.")
+                return
+            }
+
+            for _ in 0..<count {
+                let settings = AVCapturePhotoSettings()
+                if #available(macOS 13.0, iOS 16.0, *) {
+                    settings.maxPhotoDimensions = self.photoOutput.maxSupportedPhotoDimensions
+                } else {
+                    settings.isHighResolutionPhotoEnabled = true
+                }
+                self.photoOutput.capturePhoto(with: settings, delegate: self.photoDelegate)
+            }
+        }
+    }
+
+    fileprivate func publishPose(_ pose: PoseData?) {
+        poseData = pose
+    }
+
+    fileprivate func didProcessPhoto(image: NSImage?, error: Error?) {
+        processedBurstCount += 1
+
+        if let error {
+            print("Photo capture error: \(error.localizedDescription)")
+        }
+
+        if let image {
+            burstImages.append(image)
+        }
+
+        completeBurstIfNeeded()
+    }
+
+    private func completeBurstIfNeeded() {
+        guard expectedBurstCount > 0,
+              processedBurstCount >= expectedBurstCount else { return }
+
+        let images = burstImages
+        resetBurstState()
+        lastCaptureDate = Date()
+        burstCompletion?(images)
+        burstCompletion = nil
+    }
+
+    private func resetBurstState() {
+        burstImages = []
+        expectedBurstCount = 0
+        processedBurstCount = 0
+    }
+
+    private func failBurstCapture(reason: String) {
+        print("Burst capture aborted: \(reason)")
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let completion = self.burstCompletion
+            self.resetBurstState()
+            self.burstCompletion = nil
+            completion?([])
+        }
+    }
+}
+
+private final class PhotoCaptureDelegate: NSObject, AVCapturePhotoCaptureDelegate {
+    weak var owner: CameraManager?
+
+    init(owner: CameraManager) {
+        self.owner = owner
+    }
+
+    func photoOutput(_ output: AVCapturePhotoOutput, didFinishProcessingPhoto photo: AVCapturePhoto, error: Error?) {
+        let image: NSImage?
+        if let data = photo.fileDataRepresentation() {
+            image = NSImage(data: data)
+        } else {
+            image = nil
+        }
+
+        Task { @MainActor [weak self] in
+            guard let owner = self?.owner else { return }
+            owner.didProcessPhoto(image: image, error: error)
+        }
+    }
+}
+
+private final class VideoDataDelegate: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
+    weak var owner: CameraManager?
+    private let poseDetector = PoseDetector()
+
+    init(owner: CameraManager) {
+        self.owner = owner
+    }
+
+    func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
+        guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+        poseDetector.process(pixelBuffer: pixelBuffer) { [weak self] pose in
+            Task { @MainActor in
+                self?.owner?.publishPose(pose)
+            }
+        }
+    }
+}
