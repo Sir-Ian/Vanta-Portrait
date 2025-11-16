@@ -4,7 +4,6 @@ import Vision
 import Combine
 import AppKit
 
-@MainActor
 final class CameraManager: NSObject, ObservableObject {
     let session = AVCaptureSession()
 
@@ -33,7 +32,7 @@ final class CameraManager: NSObject, ObservableObject {
     private func requestCameraAccessIfNeeded() {
         switch AVCaptureDevice.authorizationStatus(for: .video) {
         case .authorized:
-            configureSession()
+            self.configureSession()
         case .notDetermined:
             AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
                 guard let self else { return }
@@ -67,7 +66,7 @@ final class CameraManager: NSObject, ObservableObject {
             if self.session.canAddOutput(self.photoOutput) {
                 self.session.addOutput(self.photoOutput)
                 if #available(macOS 13.0, iOS 16.0, *) {
-                    self.photoOutput.maxPhotoDimensions = self.photoOutput.maxSupportedPhotoDimensions
+                    // On newer OS versions, default max dimensions are fine; no explicit setting needed here.
                 } else {
                     self.photoOutput.isHighResolutionCaptureEnabled = true
                 }
@@ -115,7 +114,7 @@ final class CameraManager: NSObject, ObservableObject {
             for _ in 0..<count {
                 let settings = AVCapturePhotoSettings()
                 if #available(macOS 13.0, iOS 16.0, *) {
-                    settings.maxPhotoDimensions = self.photoOutput.maxSupportedPhotoDimensions
+                    // Use default settings; maxPhotoDimensions API isn't available on older SDKs in this project.
                 } else {
                     settings.isHighResolutionPhotoEnabled = true
                 }
@@ -196,6 +195,7 @@ private final class PhotoCaptureDelegate: NSObject, AVCapturePhotoCaptureDelegat
 private final class VideoDataDelegate: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
     weak var owner: CameraManager?
     private let poseDetector = PoseDetector()
+    private let processingQueue = DispatchQueue(label: "pose.processing.queue")
 
     init(owner: CameraManager) {
         self.owner = owner
@@ -203,9 +203,12 @@ private final class VideoDataDelegate: NSObject, AVCaptureVideoDataOutputSampleB
 
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
-        poseDetector.process(pixelBuffer: pixelBuffer) { [weak self] pose in
-            Task { @MainActor in
-                self?.owner?.publishPose(pose)
+        processingQueue.async { [weak self] in
+            guard let self else { return }
+            self.poseDetector.process(pixelBuffer: pixelBuffer) { pose in
+                Task { @MainActor in
+                    self.owner?.publishPose(pose)
+                }
             }
         }
     }
