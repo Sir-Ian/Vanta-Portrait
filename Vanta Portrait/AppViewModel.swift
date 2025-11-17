@@ -11,6 +11,8 @@ final class AppViewModel: ObservableObject {
     @Published var showingResult = false
     @Published var bestImage: NSImage?
     @Published var showDebugPanel = false
+    
+    private var wasReadyForCapture = false
 
     let cameraManager = CameraManager()
 
@@ -49,6 +51,14 @@ final class AppViewModel: ObservableObject {
     func retake() {
         showingResult = false
         bestImage = nil
+        // Reset readiness tracking so auto-capture can trigger immediately when still aligned
+        wasReadyForCapture = false
+    }
+
+    private func cancelCountdown() {
+        countdownTimer?.invalidate()
+        countdownTimer = nil
+        countdownValue = nil
     }
 
     private func startCountdown() {
@@ -109,6 +119,22 @@ final class AppViewModel: ObservableObject {
                                                  strictMode: strictMode)
         guidanceState = evaluation.0
         guidanceMessage = evaluation.1
+
+        let isReady = evaluation.0.readyForCapture
+
+        // Auto-start countdown when transitioning into a ready state
+        if isReady && !wasReadyForCapture && countdownValue == nil && !showingResult {
+            startCountdown()
+        }
+
+        // Cancel countdown if readiness is lost
+        if !isReady && countdownValue != nil {
+            cancelCountdown()
+            guidanceMessage = strictMode ? "Hold steady to capture" : "Stay centered to capture"
+        }
+
+        // Track previous readiness to detect transitions
+        wasReadyForCapture = isReady
     }
 
     var stabilityValue: CGFloat {

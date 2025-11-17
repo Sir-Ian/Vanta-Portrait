@@ -32,12 +32,16 @@ final class CameraManager: NSObject, ObservableObject {
     private func requestCameraAccessIfNeeded() {
         switch AVCaptureDevice.authorizationStatus(for: .video) {
         case .authorized:
-            self.configureSession()
+            Task { @MainActor in
+                self.configureSession()
+            }
         case .notDetermined:
             AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
                 guard let self else { return }
                 if granted {
-                    self.configureSession()
+                    Task { @MainActor in
+                        self.configureSession()
+                    }
                 } else {
                     print("Camera access was denied by the user.")
                 }
@@ -47,7 +51,10 @@ final class CameraManager: NSObject, ObservableObject {
         }
     }
 
+    @MainActor
     private func configureSession() {
+        let videoDelegate = self.videoDelegate
+        let sampleBufferQueue = self.sampleBufferQueue
         sessionQueue.async { [weak self] in
             guard let self, !self.isConfigured else { return }
 
@@ -74,7 +81,7 @@ final class CameraManager: NSObject, ObservableObject {
 
             if self.session.canAddOutput(self.videoOutput) {
                 self.videoOutput.alwaysDiscardsLateVideoFrames = true
-                self.videoOutput.setSampleBufferDelegate(self.videoDelegate, queue: self.sampleBufferQueue)
+                self.videoOutput.setSampleBufferDelegate(videoDelegate, queue: sampleBufferQueue)
                 self.session.addOutput(self.videoOutput)
             }
 
@@ -84,6 +91,7 @@ final class CameraManager: NSObject, ObservableObject {
         }
     }
 
+    @MainActor
     func captureBurst(count: Int = 3, completion: @escaping ([NSImage]) -> Void) {
         guard count > 0 else {
             completion([])
@@ -96,6 +104,7 @@ final class CameraManager: NSObject, ObservableObject {
         processedBurstCount = 0
         burstCompletion = completion
 
+        let photoDelegate = self.photoDelegate
         sessionQueue.async { [weak self] in
             guard let self else { return }
             guard self.isConfigured else {
@@ -118,7 +127,7 @@ final class CameraManager: NSObject, ObservableObject {
                 } else {
                     settings.isHighResolutionPhotoEnabled = true
                 }
-                self.photoOutput.capturePhoto(with: settings, delegate: self.photoDelegate)
+                self.photoOutput.capturePhoto(with: settings, delegate: photoDelegate)
             }
         }
     }
@@ -177,16 +186,11 @@ private final class PhotoCaptureDelegate: NSObject, AVCapturePhotoCaptureDelegat
         self.owner = owner
     }
 
-    func photoOutput(_ output: AVCapturePhotoOutput, didFinishProcessingPhoto photo: AVCapturePhoto, error: Error?) {
-        let image: NSImage?
-        if let data = photo.fileDataRepresentation() {
-            image = NSImage(data: data)
-        } else {
-            image = nil
-        }
-
+    nonisolated func photoOutput(_ output: AVCapturePhotoOutput, didFinishProcessingPhoto photo: AVCapturePhoto, error: Error?) {
+        let data = photo.fileDataRepresentation()
         Task { @MainActor [weak self] in
             guard let owner = self?.owner else { return }
+            let image = data.flatMap { NSImage(data: $0) }
             owner.didProcessPhoto(image: image, error: error)
         }
     }
@@ -194,6 +198,9 @@ private final class PhotoCaptureDelegate: NSObject, AVCapturePhotoCaptureDelegat
 
 private final class VideoDataDelegate: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
     weak var owner: CameraManager?
+    private struct PixelBufferBox: @unchecked Sendable {
+        let buffer: CVImageBuffer
+    }
     private let poseDetector = PoseDetector()
     private let processingQueue = DispatchQueue(label: "pose.processing.queue")
 
@@ -201,11 +208,12 @@ private final class VideoDataDelegate: NSObject, AVCaptureVideoDataOutputSampleB
         self.owner = owner
     }
 
-    func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
+    nonisolated func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
-        processingQueue.async { [weak self] in
+        let box = PixelBufferBox(buffer: pixelBuffer)
+        processingQueue.async { [weak self, box] in
             guard let self else { return }
-            self.poseDetector.process(pixelBuffer: pixelBuffer) { pose in
+            self.poseDetector.process(pixelBuffer: box.buffer) { pose in
                 Task { @MainActor in
                     self.owner?.publishPose(pose)
                 }
