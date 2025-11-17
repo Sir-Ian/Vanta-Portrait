@@ -11,6 +11,7 @@ final class AppViewModel: ObservableObject {
     @Published var showingResult = false
     @Published var bestImage: NSImage?
     @Published var showDebugPanel = false
+    @Published var cameraWarning: String?
     
     private var wasReadyForCapture = false
 
@@ -28,6 +29,17 @@ final class AppViewModel: ObservableObject {
                 self?.handlePose(pose)
             }
             .store(in: &cancellables)
+
+        cameraManager.$availability
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] availability in
+                self?.cameraWarning = availability.message
+                if availability != .ready {
+                    self?.cancelCountdown()
+                    self?.guidanceMessage = availability.message ?? "Camera unavailable"
+                }
+            }
+            .store(in: &cancellables)
     }
 
     func toggleStrictMode() {
@@ -41,6 +53,10 @@ final class AppViewModel: ObservableObject {
 
     func attemptCapture() {
         guard countdownValue == nil else { return }
+        guard cameraManager.availability == .ready else {
+            guidanceMessage = cameraWarning ?? "Camera not ready"
+            return
+        }
         guard guidanceState.readyForCapture else {
             guidanceMessage = strictMode ? "Adjust your pose" : "Center yourself a bit more"
             return
@@ -108,6 +124,10 @@ final class AppViewModel: ObservableObject {
     }
 
     private func handlePose(_ pose: PoseData?) {
+        guard cameraManager.availability == .ready else {
+            guidanceState = GuidanceState()
+            return
+        }
         if let center = pose?.center {
             stabilityTracker.update(with: center)
         } else {

@@ -2,13 +2,16 @@
 
 struct ContentView: View {
     @StateObject private var viewModel = AppViewModel()
-
+    
     var body: some View {
         ZStack {
             if viewModel.showingResult, let image = viewModel.bestImage {
                 ResultView(image: image) {
                     viewModel.retake()
-                } onSave: { _ in }
+                } onSave: { url in
+                    // Could add analytics or other post-save actions here
+                    print("Photo saved to: \(url.path)")
+                }
             } else {
                 mainCaptureView
             }
@@ -28,6 +31,13 @@ struct ContentView: View {
         VStack(spacing: 16) {
             ZStack(alignment: .bottom) {
                 CameraPreviewView(manager: viewModel.cameraManager)
+                    .overlay(alignment: .top) {
+                        if let warning = viewModel.cameraWarning {
+                            statusBanner(text: warning)
+                                .padding()
+                                .transition(.move(edge: .top).combined(with: .opacity))
+                        }
+                    }
                     .overlay(alignment: .topLeading) {
                         if viewModel.showDebugPanel {
                             DebugPanelView(guidanceState: viewModel.guidanceState,
@@ -36,8 +46,12 @@ struct ContentView: View {
                                            countdownActive: viewModel.countdownValue != nil,
                                            lastCaptureDate: viewModel.cameraManager.lastCaptureDate)
                             .padding()
+                            .transition(.opacity.combined(with: .scale(scale: 0.9)))
                         }
                     }
+                    .animation(.easeInOut(duration: 0.3), value: viewModel.showDebugPanel)
+                    .animation(.easeInOut(duration: 0.3), value: viewModel.cameraWarning)
+                
                 VStack(spacing: 8) {
                     Text(viewModel.guidanceMessage)
                         .font(.title3)
@@ -46,6 +60,7 @@ struct ContentView: View {
                         .background(.thinMaterial)
                         .cornerRadius(12)
                         .padding()
+                        .animation(.easeInOut(duration: 0.2), value: viewModel.guidanceMessage)
                     controlBar
                 }
             }
@@ -54,16 +69,32 @@ struct ContentView: View {
         .overlay {
             if let countdown = viewModel.countdownValue {
                 CountdownOverlay(value: countdown)
+                    .transition(.scale.combined(with: .opacity))
             }
         }
+        .animation(.spring(response: 0.4, dampingFraction: 0.8), value: viewModel.countdownValue)
         .toolbar {
             ToolbarItemGroup(placement: .automatic) {
                 Toggle("Strict", isOn: strictBinding)
+                    .help("Enable strict mode for higher quality requirements")
+                
                 Button(viewModel.showDebugPanel ? "Hide Debug" : "Show Debug") {
                     viewModel.toggleDebugPanel()
                 }
+                .help("Toggle debug panel")
+                .keyboardShortcut("d", modifiers: [.command, .shift])
             }
         }
+    }
+
+    private func statusBanner(text: String) -> some View {
+        Text(text)
+            .font(.headline)
+            .padding(12)
+            .frame(maxWidth: .infinity)
+            .background(Color.red.opacity(0.85))
+            .foregroundColor(.white)
+            .cornerRadius(12)
     }
 
     private var controlBar: some View {
@@ -71,15 +102,22 @@ struct ContentView: View {
             Toggle("Strict Mode", isOn: strictBinding)
                 .toggleStyle(.switch)
                 .labelsHidden()
+                .help("Enable strict mode for higher quality requirements")
+            
             Button(action: viewModel.toggleDebugPanel) {
                 Label(viewModel.showDebugPanel ? "Hide Debug" : "Show Debug", systemImage: "waveform")
             }
+            .help("Toggle debug panel (⌘⇧D)")
+            
             Spacer()
+            
             Button(action: viewModel.attemptCapture) {
                 Label("Capture", systemImage: "camera.fill")
             }
             .keyboardShortcut(.space, modifiers: [])
             .buttonStyle(.borderedProminent)
+            .disabled(viewModel.cameraWarning != nil) // Disable capture if there's a warning
+            .help("Capture photo (Space)")
         }
         .padding()
         .background(.ultraThinMaterial)

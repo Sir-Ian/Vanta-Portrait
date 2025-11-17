@@ -10,6 +10,7 @@ final class CameraManager: NSObject, ObservableObject {
     @Published var poseData: PoseData?
     @Published var lastCaptureDate: Date?
     @Published var countdownActive = false
+    @Published var availability: CameraAvailability = .unknown
 
     private let photoOutput = AVCapturePhotoOutput()
     private let videoOutput = AVCaptureVideoDataOutput()
@@ -44,10 +45,14 @@ final class CameraManager: NSObject, ObservableObject {
                     }
                 } else {
                     print("Camera access was denied by the user.")
+                    Task { @MainActor in
+                        self.availability = .denied
+                    }
                 }
             }
         default:
             print("Camera access not granted. Update privacy permissions to capture photos.")
+            availability = .denied
         }
     }
 
@@ -61,14 +66,32 @@ final class CameraManager: NSObject, ObservableObject {
             self.session.beginConfiguration()
             self.session.sessionPreset = .high
 
-            guard let device = AVCaptureDevice.default(for: .video),
-                  let input = try? AVCaptureDeviceInput(device: device),
-                  self.session.canAddInput(input) else {
-                print("Unable to create camera input")
+            guard let device = AVCaptureDevice.default(for: .video) else {
                 self.session.commitConfiguration()
+                DispatchQueue.main.async {
+                    self.availability = .noDevice
+                }
                 return
             }
-            self.session.addInput(input)
+
+            do {
+                let input = try AVCaptureDeviceInput(device: device)
+                guard self.session.canAddInput(input) else {
+                    self.session.commitConfiguration()
+                    DispatchQueue.main.async {
+                        self.availability = .configurationFailed("Cannot add camera input to session.")
+                    }
+                    return
+                }
+                self.session.addInput(input)
+            } catch {
+                print("Unable to create camera input: \(error.localizedDescription)")
+                self.session.commitConfiguration()
+                DispatchQueue.main.async {
+                    self.availability = .configurationFailed("Failed to open the camera: \(error.localizedDescription)")
+                }
+                return
+            }
 
             if self.session.canAddOutput(self.photoOutput) {
                 self.session.addOutput(self.photoOutput)
@@ -87,6 +110,9 @@ final class CameraManager: NSObject, ObservableObject {
 
             self.session.commitConfiguration()
             self.isConfigured = true
+            DispatchQueue.main.async {
+                self.availability = .ready
+            }
             self.session.startRunning()
         }
     }
@@ -175,6 +201,27 @@ final class CameraManager: NSObject, ObservableObject {
             self.resetBurstState()
             self.burstCompletion = nil
             completion?([])
+        }
+    }
+}
+
+enum CameraAvailability: Equatable {
+    case unknown
+    case ready
+    case noDevice
+    case denied
+    case configurationFailed(String)
+
+    var message: String? {
+        switch self {
+        case .unknown, .ready:
+            return nil
+        case .noDevice:
+            return "No compatible camera was found. Connect a webcam and restart the app."
+        case .denied:
+            return "Camera permission is denied. Enable access in System Settings → Privacy & Security → Camera."
+        case .configurationFailed(let reason):
+            return "Camera could not be initialized: \(reason)"
         }
     }
 }

@@ -9,6 +9,7 @@ Vanta Portrait is a SwiftUI macOS app that turns the built-in camera into an AI-
 3. **StabilityTracker** keeps a rolling buffer of recent face centers to decide if the user is steady.
 4. **GuidanceEngine** combines pose and stability metrics into human-friendly guidance strings plus booleans used throughout the UI.
 5. **AppViewModel + SwiftUI Views** render the live preview, guidance text, capture controls, countdown overlay, debug panel, and result view that highlights the best frame.
+6. **Camera availability handling** surfaces permission or hardware issues inline so you know when the webcam is disconnected or denied.
 
 Strict and flexible capture modes enforce different tolerances before the countdown begins. When conditions are met, the app fires a 3-2-1 countdown, captures a burst of 3–5 frames, scores them heuristically (centered, level, eyes open), and surfaces the top image with options to save or retake.
 
@@ -62,6 +63,7 @@ After a successful build you can run the generated `.app` from the derived data 
 ## Operating the app
 
 - **Preview & Guidance**: Keep your face centered and level as guided by the text overlay. Strict mode requires tighter tolerances.
+- **Camera status banner**: If the app cannot access a webcam (missing device, denied permissions, or configuration errors), a red banner explains the issue and disables capture until resolved.
 - **Strict vs Flexible**: Toggle the strict switch in the control bar or toolbar. Strict mode enforces alignment, head tilt, eyes-open, and stability; flexible mode only requires centered & stable.
 - **Capture**: Click the **Capture** button or press the space bar. If you meet the requirements, a 3…2…1 countdown appears before the burst fires.
 - **Result view**: After the burst, the best frame appears with **Retake** and **Save to Pictures** buttons.
