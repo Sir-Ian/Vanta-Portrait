@@ -16,8 +16,9 @@
 		E6639C912EC995870060A301 /* CoreML.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = E6639C902EC995870060A301 /* CoreML.framework */; };
 		E6639C932EC995900060A301 /* UIKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = E6639C922EC995900060A301 /* UIKit.framework */; platformFilter = ios; };
 		E6639C952EC9959C0060A301 /* UniformTypeIdentifiers.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = E6639C942EC9959C0060A301 /* UniformTypeIdentifiers.framework */; };
-		E6C9B3B02ECACEBB00B5DF9E /* README 2.md in Resources */ = {isa = PBXBuildFile; fileRef = E6C9B3AF2ECACEBB00B5DF9E /* README 2.md */; };
 		E6C9B3B22ECACF1900B5DF9E /* IMPROVEMENTS.md in Resources */ = {isa = PBXBuildFile; fileRef = E6C9B3B12ECACF1900B5DF9E /* IMPROVEMENTS.md */; };
+		E6C9B3D32ECAD10B00B5DF9E /* README.md in Resources */ = {isa = PBXBuildFile; fileRef = E6C9B3D12ECAD10B00B5DF9E /* README.md */; };
+		E6C9B3D42ECAD10B00B5DF9E /* Vanta-Portrait-Info.plist in Resources */ = {isa = PBXBuildFile; fileRef = E6C9B3D22ECAD10B00B5DF9E /* Vanta-Portrait-Info.plist */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -50,8 +51,9 @@
 		E6639C902EC995870060A301 /* CoreML.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreML.framework; path = Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS26.1.sdk/System/Library/Frameworks/CoreML.framework; sourceTree = DEVELOPER_DIR; };
 		E6639C922EC995900060A301 /* UIKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UIKit.framework; path = Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS26.1.sdk/System/Library/Frameworks/UIKit.framework; sourceTree = DEVELOPER_DIR; };
 		E6639C942EC9959C0060A301 /* UniformTypeIdentifiers.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UniformTypeIdentifiers.framework; path = Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS26.1.sdk/System/Library/Frameworks/UniformTypeIdentifiers.framework; sourceTree = DEVELOPER_DIR; };
-		E6C9B3AF2ECACEBB00B5DF9E /* README 2.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = "README 2.md"; sourceTree = "<group>"; };
 		E6C9B3B12ECACF1900B5DF9E /* IMPROVEMENTS.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = IMPROVEMENTS.md; sourceTree = "<group>"; };
+		E6C9B3D12ECAD10B00B5DF9E /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
+		E6C9B3D22ECAD10B00B5DF9E /* Vanta-Portrait-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = "Vanta-Portrait-Info.plist"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -109,12 +111,13 @@
 		E6639C502EC994670060A301 = {
 			isa = PBXGroup;
 			children = (
+				E6C9B3D12ECAD10B00B5DF9E /* README.md */,
+				E6C9B3D22ECAD10B00B5DF9E /* Vanta-Portrait-Info.plist */,
 				E6639C5B2EC994670060A301 /* Vanta Portrait */,
 				E6639C692EC994670060A301 /* Vanta PortraitTests */,
 				E6639C732EC994670060A301 /* Vanta PortraitUITests */,
 				E6639C832EC995540060A301 /* Frameworks */,
 				E6639C5A2EC994670060A301 /* Products */,
-				E6C9B3AF2ECACEBB00B5DF9E /* README 2.md */,
 				E6C9B3B12ECACF1900B5DF9E /* IMPROVEMENTS.md */,
 			);
 			sourceTree = "<group>";
@@ -265,7 +268,8 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				E6C9B3B02ECACEBB00B5DF9E /* README 2.md in Resources */,
+				E6C9B3D32ECAD10B00B5DF9E /* README.md in Resources */,
+				E6C9B3D42ECAD10B00B5DF9E /* Vanta-Portrait-Info.plist in Resources */,
 				E6C9B3B22ECACF1900B5DF9E /* IMPROVEMENTS.md in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
