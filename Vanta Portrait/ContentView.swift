@@ -31,11 +31,14 @@ struct ContentView: View {
         VStack(spacing: 16) {
             ZStack(alignment: .bottom) {
                 CameraPreviewView(manager: viewModel.cameraManager)
+                    .accessibilityLabel("Camera preview")
+                    .accessibilityValue(viewModel.guidanceMessage)
                     .overlay(alignment: .top) {
                         if let warning = viewModel.cameraWarning {
                             statusBanner(text: warning)
                                 .padding()
                                 .transition(.move(edge: .top).combined(with: .opacity))
+                                .accessibilityAddTraits(.isStaticText)
                         }
                     }
                     .overlay(alignment: .topLeading) {
@@ -47,6 +50,7 @@ struct ContentView: View {
                                            lastCaptureDate: viewModel.cameraManager.lastCaptureDate)
                             .padding()
                             .transition(.opacity.combined(with: .scale(scale: 0.9)))
+                            .accessibilityLabel("Debug panel")
                         }
                     }
                     .animation(.easeInOut(duration: 0.3), value: viewModel.showDebugPanel)
@@ -61,6 +65,7 @@ struct ContentView: View {
                         .cornerRadius(12)
                         .padding()
                         .animation(.easeInOut(duration: 0.2), value: viewModel.guidanceMessage)
+                        .accessibilityAddTraits(.isStaticText)
                     controlBar
                 }
             }
@@ -70,6 +75,8 @@ struct ContentView: View {
             if let countdown = viewModel.countdownValue {
                 CountdownOverlay(value: countdown)
                     .transition(.scale.combined(with: .opacity))
+                    .accessibilityLabel("Countdown: \(countdown)")
+                    .accessibilityAddTraits(.updatesFrequently)
             }
         }
         .animation(.spring(response: 0.4, dampingFraction: 0.8), value: viewModel.countdownValue)
@@ -103,11 +110,14 @@ struct ContentView: View {
                 .toggleStyle(.switch)
                 .labelsHidden()
                 .help("Enable strict mode for higher quality requirements")
+                .accessibilityLabel("Strict mode toggle")
+                .accessibilityValue(viewModel.strictMode ? "On" : "Off")
             
             Button(action: viewModel.toggleDebugPanel) {
                 Label(viewModel.showDebugPanel ? "Hide Debug" : "Show Debug", systemImage: "waveform")
             }
             .help("Toggle debug panel (⌘⇧D)")
+            .accessibilityLabel(viewModel.showDebugPanel ? "Hide debug panel" : "Show debug panel")
             
             Spacer()
             
@@ -118,6 +128,8 @@ struct ContentView: View {
             .buttonStyle(.borderedProminent)
             .disabled(viewModel.cameraWarning != nil) // Disable capture if there's a warning
             .help("Capture photo (Space)")
+            .accessibilityLabel("Capture photo")
+            .accessibilityHint(viewModel.cameraWarning != nil ? "Camera unavailable" : viewModel.guidanceMessage)
         }
         .padding()
         .background(.ultraThinMaterial)

@@ -24,6 +24,7 @@ final class CameraManager: NSObject, ObservableObject {
     private var expectedBurstCount = 0
     private var processedBurstCount = 0
     private var isConfigured = false
+    private let burstLock = NSLock() // Thread-safe burst state access
 
     override init() {
         super.init()
@@ -123,12 +124,18 @@ final class CameraManager: NSObject, ObservableObject {
             completion([])
             return
         }
-        guard burstCompletion == nil else { return }
+        
+        burstLock.lock()
+        guard burstCompletion == nil else {
+            burstLock.unlock()
+            return
+        }
 
         burstImages = []
         expectedBurstCount = count
         processedBurstCount = 0
         burstCompletion = completion
+        burstLock.unlock()
 
         let photoDelegate = self.photoDelegate
         sessionQueue.async { [weak self] in
@@ -163,6 +170,9 @@ final class CameraManager: NSObject, ObservableObject {
     }
 
     fileprivate func didProcessPhoto(image: NSImage?, error: Error?) {
+        burstLock.lock()
+        defer { burstLock.unlock() }
+        
         processedBurstCount += 1
 
         if let error {
@@ -177,29 +187,41 @@ final class CameraManager: NSObject, ObservableObject {
     }
 
     private func completeBurstIfNeeded() {
+        // Must be called with burstLock held
         guard expectedBurstCount > 0,
               processedBurstCount >= expectedBurstCount else { return }
 
         let images = burstImages
+        let completion = burstCompletion
         resetBurstState()
-        lastCaptureDate = Date()
-        burstCompletion?(images)
-        burstCompletion = nil
+        
+        // Release lock before calling completion
+        burstLock.unlock()
+        
+        Task { @MainActor [weak self] in
+            self?.lastCaptureDate = Date()
+            completion?(images)
+        }
+        
+        burstLock.lock() // Re-acquire for defer statement
     }
 
     private func resetBurstState() {
+        // Must be called with burstLock held
         burstImages = []
         expectedBurstCount = 0
         processedBurstCount = 0
+        burstCompletion = nil
     }
 
     private func failBurstCapture(reason: String) {
         print("Burst capture aborted: \(reason)")
-        Task { @MainActor [weak self] in
-            guard let self else { return }
-            let completion = self.burstCompletion
-            self.resetBurstState()
-            self.burstCompletion = nil
+        burstLock.lock()
+        let completion = self.burstCompletion
+        resetBurstState()
+        burstLock.unlock()
+        
+        Task { @MainActor in
             completion?([])
         }
     }
@@ -245,9 +267,6 @@ private final class PhotoCaptureDelegate: NSObject, AVCapturePhotoCaptureDelegat
 
 private final class VideoDataDelegate: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
     weak var owner: CameraManager?
-    private struct PixelBufferBox: @unchecked Sendable {
-        let buffer: CVImageBuffer
-    }
     private let poseDetector = PoseDetector()
     private let processingQueue = DispatchQueue(label: "pose.processing.queue")
 
@@ -257,10 +276,18 @@ private final class VideoDataDelegate: NSObject, AVCaptureVideoDataOutputSampleB
 
     nonisolated func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
-        let box = PixelBufferBox(buffer: pixelBuffer)
-        processingQueue.async { [weak self, box] in
-            guard let self else { return }
-            self.poseDetector.process(pixelBuffer: box.buffer) { pose in
+        
+        // Retain the pixel buffer for safe async processing
+        CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
+        
+        processingQueue.async { [weak self, pixelBuffer] in
+            guard let self else {
+                CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly)
+                return
+            }
+            
+            self.poseDetector.process(pixelBuffer: pixelBuffer) { pose in
+                CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly)
                 Task { @MainActor in
                     self.owner?.publishPose(pose)
                 }

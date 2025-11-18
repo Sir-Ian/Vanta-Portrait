@@ -26,8 +26,13 @@ final class PoseDetector {
 
     func process(pixelBuffer: CVPixelBuffer, completion: @escaping (PoseData?) -> Void) {
         let request = VNDetectFaceLandmarksRequest { request, error in
-            guard error == nil,
-                  let observation = request.results?.first as? VNFaceObservation else {
+            if let error {
+                print("Face detection error: \(error.localizedDescription)")
+                completion(nil)
+                return
+            }
+            
+            guard let observation = request.results?.first as? VNFaceObservation else {
                 completion(nil)
                 return
             }
@@ -43,7 +48,12 @@ final class PoseDetector {
 
         requestHandlerQueue.async {
             let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .up, options: [:])
-            try? handler.perform([request])
+            do {
+                try handler.perform([request])
+            } catch {
+                print("Vision request failed: \(error.localizedDescription)")
+                completion(nil)
+            }
         }
     }
 
