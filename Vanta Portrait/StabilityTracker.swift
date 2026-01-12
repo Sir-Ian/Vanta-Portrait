@@ -3,10 +3,10 @@ import CoreGraphics
 
 final class StabilityTracker {
     private var points: [CGPoint] = []
-    private let maxSamples = 15
+    private let maxSamples = 10
     private(set) var stabilityValue: CGFloat = 1
-    private let strictThreshold: CGFloat = 0.006
-    private let flexibleThreshold: CGFloat = 0.015
+    private let strictThreshold: CGFloat = 0.012
+    private let flexibleThreshold: CGFloat = 0.025
 
     func update(with point: CGPoint?) {
         guard let point else {
@@ -37,5 +37,16 @@ final class StabilityTracker {
 
     func isStable(strict: Bool) -> Bool {
         stabilityValue < (strict ? strictThreshold : flexibleThreshold)
+    }
+
+    func stabilityConfidence(strict: Bool) -> Double {
+        let threshold = strict ? strictThreshold : flexibleThreshold
+        let normalized = max(0, 1 - Double(stabilityValue / (threshold * 2)))
+        return min(1, normalized)
+    }
+
+    func reset() {
+        points.removeAll()
+        stabilityValue = 1
     }
 }

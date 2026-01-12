@@ -1,32 +1,37 @@
 # Vanta Portrait
 
-Vanta Portrait is a SwiftUI macOS app that turns the built-in camera into an AI-guided portrait experience. The app streams a live preview, evaluates pose quality using Vision, guides the user with live text, and fires a countdown-based burst capture that returns the best frame.
+Vanta Portrait is a SwiftUI camera app (macOS/iOS-ready) that turns a built-in camera into an AI-guided portrait flow. It streams a live preview, evaluates pose quality locally with Vision, guides the user with live text, then fires a countdown-based burst capture to surface the best frame. The experience is state-driven to keep capture, guidance, and reveal phases explicit as we prepare to add Azure image models for remote scoring.
 
-## How it works
+## How it works (today)
 
-1. **CameraManager (AVFoundation)** powers the live preview, supplies frames for analysis, and captures a burst of full-resolution stills.
-2. **PoseDetector (Vision)** extracts a face bounding box, tilt, and approximate eye openness from video frames.
-3. **StabilityTracker** keeps a rolling buffer of recent face centers to decide if the user is steady.
-4. **GuidanceEngine** combines pose and stability metrics into human-friendly guidance strings plus booleans used throughout the UI.
-5. **AppViewModel + SwiftUI Views** render the live preview, guidance text, capture controls, countdown overlay, debug panel, and result view that highlights the best frame.
-6. **Camera availability handling** surfaces permission or hardware issues inline so you know when the webcam is disconnected or denied.
+1. **CameraManager (AVFoundation)** powers the live preview, supplies frames for analysis, and captures burst stills.
+2. **PoseDetector (Vision)** extracts a face bounding box, tilt, yaw, and approximate eye openness from video frames.
+3. **StabilityTracker** maintains a rolling buffer of face centers and reports stability confidence.
+4. **GuidanceEngine** converts pose/stability into a readiness score plus guidance text; eyes-open remains a hard gate.
+5. **AppViewModel + ExperienceState** drive the flow (`idle → guiding → almostReady → capturing → revealing → resetting`) so capture commitment and reset hygiene are explicit.
+6. **SwiftUI views** render the preview, overlays, countdown, debug panel, and result view. Camera availability issues surface inline.
 
-Strict and flexible capture modes enforce different tolerances before the countdown begins. When conditions are met, the app fires a 3-2-1 countdown, captures a burst of 3–5 frames, scores them heuristically (centered, level, eyes open), and surfaces the top image with options to save or retake.
+Strict and flexible capture modes are available; non-eye constraints now act as confidence signals so the app can proceed once readiness is high enough.
+
+## Roadmap to Azure image models
+
+- Current builds are fully local (no networking).  
+- Future iterations will ship images and metadata to Azure-hosted models for aesthetic/compliance scoring and selection. The state model is structured to drop in that remote scoring step without altering UI contracts.
 
 ## Project layout
 
 ```
 Vanta Portrait/
-├── AppViewModel.swift        // ObservableObject coordinating guidance and capture flow
-├── CameraManager.swift       // AVCaptureSession setup, live preview, burst capture
-├── CameraPreviewView.swift   // NSViewRepresentable wrapper around AVCaptureVideoPreviewLayer
-├── ContentView.swift         // Main UI with preview, guidance, controls, and overlays
-├── CountdownOverlay.swift    // Fullscreen countdown numbers
-├── DebugPanelView.swift      // Optional metrics panel for tuning
-├── GuidanceEngine.swift      // Converts pose data into guidance state/messages
-├── PoseDetector.swift        // Vision pipeline for faces, tilt, and eyes-open
-├── ResultView.swift          // Displays the best frame with save/retake actions
-├── StabilityTracker.swift    // Rolling movement tracker for steadiness detection
+├── AppViewModel.swift        // Experience state + capture/guidance flow
+├── CameraManager.swift       // AVCaptureSession setup, preview, burst capture
+├── CameraPreviewView.swift   // Platform preview layer wrapper
+├── ContentView.swift         // Main UI with preview, guidance, controls, overlays
+├── CountdownOverlay.swift    // Countdown overlay
+├── DebugPanelView.swift      // Optional metrics panel
+├── GuidanceEngine.swift      // Pose/stability → readiness score + guidance
+├── PoseDetector.swift        // Vision face/landmark pipeline
+├── ResultView.swift          // Best-frame display with save/retake
+├── StabilityTracker.swift    // Rolling stability/confidence
 └── Vanta_PortraitApp.swift   // App entry point
 ```
 
@@ -34,53 +39,48 @@ Assets and test targets live in their default Xcode folders.
 
 ## Requirements
 
-- macOS 13+
+- macOS 13+ (macOS target) or iOS 18.6+ (iOS target)
 - Xcode 15+ (or `xcodebuild` command line tools)
-- Mac with an available webcam
+- Camera permission granted on first run
 
 ## Setup
 
 1. Clone or download this repository.
 2. Open `Vanta Portrait.xcodeproj` in Xcode, or work from Terminal in the repository root.
-3. Ensure the app has permission to use the camera the first time it runs.
+3. Grant camera access when prompted.
 
 ## Running the app
 
 ### Xcode
 1. Open the project in Xcode.
 2. Select the **Vanta Portrait** target.
-3. Choose the **My Mac** destination.
+3. Choose **My Mac** or an iOS simulator/device destination.
 4. Press **⌘R** to build and run.
 
-### Command line
+### Command line (macOS build)
 
 ```bash
 xcodebuild -scheme "Vanta Portrait" -sdk macosx -destination 'platform=macOS' build
 ```
 
-After a successful build you can run the generated `.app` from the derived data path or continue using Xcode for debugging.
-
 ## Operating the app
 
-- **Preview & Guidance**: Keep your face centered and level as guided by the text overlay. Strict mode requires tighter tolerances.
-- **Camera status banner**: If the app cannot access a webcam (missing device, denied permissions, or configuration errors), a red banner explains the issue and disables capture until resolved.
-- **Strict vs Flexible**: Toggle the strict switch in the control bar or toolbar. Strict mode enforces alignment, head tilt, eyes-open, and stability; flexible mode only requires centered & stable.
-- **Capture**: Click the **Capture** button or press the space bar. If you meet the requirements, a 3…2…1 countdown appears before the burst fires.
-- **Result view**: After the burst, the best frame appears with **Retake** and **Save to Pictures** buttons.
-- **Debug Panel**: Toggle “Show Debug” to display raw metrics such as stability, tilt, and booleans used for strict/flexible decisions.
+- **Preview & Guidance**: Keep your face centered/level as guided. Eyes-open is required; other constraints are advisory but influence readiness.
+- **Camera status banner**: If the app cannot access a camera (missing device, denied permissions, config errors), a banner explains the issue and disables capture until resolved.
+- **Strict vs Flexible**: Toggle the strict switch in the control bar or toolbar. Strict mode expects tighter pose/stability signals; flexible mode is more forgiving.
+- **Capture**: Click **Capture** or press Space. When the experience reaches `almostReady`, a 3…2…1 countdown runs and a burst (3–5 frames) fires automatically.
+- **Result view**: After the burst, the best frame appears with **Retake** and **Save to Pictures**. Retake runs through a reset state before guiding resumes.
+- **Debug Panel**: Toggle “Show Debug” to view readiness components (center, tilt, stability, eyes).
 
-## Testing and linting
+## Testing
 
-This project currently relies on Xcode’s build/test tooling. Run the unit test target (even if it only contains template tests) with:
+Run the unit test target with:
 
 ```bash
 xcodebuild test -scheme "Vanta Portrait" -sdk macosx -destination 'platform=macOS'
 ```
 
-Running either the `build` or `test` command ensures SwiftUI, AVFoundation, and Vision files compile and link.
-
 ## Troubleshooting
 
-- If the preview is blank, confirm the app has camera permissions in **System Settings → Privacy & Security → Camera**.
+- If the preview is blank, confirm camera permissions in **System Settings → Privacy & Security → Camera** (macOS) or **Settings → Privacy & Security → Camera** (iOS).
 - If `xcodebuild` cannot find a destination, pass an explicit destination such as `-destination 'platform=macOS,arch=arm64'` on Apple silicon.
-- The Vision-based heuristics are intentionally simple; adjust thresholds inside `GuidanceEngine` and `StabilityTracker` for your environment.

@@ -7,7 +7,31 @@ import UIKit
 #endif
 import CoreGraphics
 
+enum ExperienceState: String {
+    case idle
+    case guiding
+    case almostReady
+    case capturing
+    case revealing
+    case resetting
+
+    func canAdvance(to next: ExperienceState) -> Bool {
+        switch (self, next) {
+        case (.idle, .guiding),
+             (.guiding, .almostReady),
+             (.almostReady, .capturing),
+             (.capturing, .revealing),
+             (.revealing, .resetting),
+             (.resetting, .idle):
+            return true
+        default:
+            return false
+        }
+    }
+}
+
 final class AppViewModel: ObservableObject {
+    @Published private(set) var experienceState: ExperienceState = .idle
     @Published var guidanceMessage: String = "Initializing…"
     @Published var guidanceState = GuidanceState()
     @Published var strictMode = true
@@ -16,15 +40,26 @@ final class AppViewModel: ObservableObject {
     @Published var bestImage: PlatformImage?
     @Published var showDebugPanel = false
     @Published var cameraWarning: String?
-    
-    private var wasReadyForCapture = false
+    @Published var isProcessingImage = false
+    @Published var processingStatus: String?
 
     let cameraManager = CameraManager()
-
     private let guidanceEngine = GuidanceEngine()
     private let stabilityTracker = StabilityTracker()
+    private let imageService = ImageGenerationService(config: AzureImageConfig(
+        apiKey: "<AZURE_OPENAI_API_KEY>", // Inject real key via config/env at runtime.
+        endpoint: "<AZURE_OPENAI_ENDPOINT>",
+        deployment: "<AZURE_OPENAI_DEPLOYMENT>",
+        apiVersion: "2023-12-01-preview"
+    ))
     private var cancellables = Set<AnyCancellable>()
     private var countdownTimer: Timer?
+    private var poseAtCapture: PoseData?
+    private var readinessSnapshot: Double?
+    private var frozenGuidanceState: GuidanceState?
+    private var frozenGuidanceMessage: String?
+    private var lastEyeOpenTimestamp: Date?
+    private let eyeOpenGraceWindow: TimeInterval = 0.3
 
     init() {
         cameraManager.$poseData
@@ -38,8 +73,10 @@ final class AppViewModel: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] availability in
                 self?.cameraWarning = availability.message
-                if availability != .ready {
-                    self?.cancelCountdown()
+                if availability == .ready {
+                    self?.beginGuidingIfIdle()
+                } else if self?.experienceState != .capturing {
+                    self?.resetCountdownState()
                     self?.guidanceMessage = availability.message ?? "Camera unavailable"
                 }
             }
@@ -56,32 +93,64 @@ final class AppViewModel: ObservableObject {
     }
 
     func attemptCapture() {
+        guard experienceState == .almostReady else {
+            if experienceState == .guiding {
+                guidanceMessage = guidanceState.eyesOpen ? "Hold steady a moment" : "Open your eyes"
+            }
+            return
+        }
         guard countdownValue == nil else { return }
         guard cameraManager.availability == .ready else {
             guidanceMessage = cameraWarning ?? "Camera not ready"
-            return
-        }
-        guard guidanceState.readyForCapture else {
-            guidanceMessage = strictMode ? "Adjust your pose" : "Center yourself a bit more"
             return
         }
         startCountdown()
     }
 
     func retake() {
-        showingResult = false
-        bestImage = nil
-        // Reset readiness tracking so auto-capture can trigger immediately when still aligned
-        wasReadyForCapture = false
+        guard experienceState == .revealing else {
+            bestImage = nil
+            showingResult = false
+            return
+        }
+        advanceExperienceState(to: .resetting)
+        performReset()
+    }
+
+    var countdownActive: Bool {
+        experienceState == .almostReady && (countdownValue ?? 0) > 0
+    }
+
+    private func advanceExperienceState(to next: ExperienceState) {
+        guard experienceState != next, experienceState.canAdvance(to: next) else { return }
+        experienceState = next
+
+        switch next {
+        case .idle, .guiding, .almostReady, .capturing:
+            showingResult = false
+        case .revealing:
+            showingResult = bestImage != nil
+        case .resetting:
+            showingResult = false
+        }
+    }
+
+    private func beginGuidingIfIdle() {
+        if experienceState == .idle {
+            advanceExperienceState(to: .guiding)
+        }
     }
 
     private func cancelCountdown() {
-        countdownTimer?.invalidate()
-        countdownTimer = nil
-        countdownValue = nil
+        guard experienceState != .capturing else { return }
+        resetCountdownState()
     }
 
     private func startCountdown() {
+        guard experienceState == .almostReady, countdownValue == nil else { return }
+        frozenGuidanceState = guidanceState
+        frozenGuidanceMessage = guidanceMessage
+        readinessSnapshot = guidanceState.readinessScore
         countdownValue = 3
         countdownTimer?.invalidate()
         countdownTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] timer in
@@ -92,12 +161,23 @@ final class AppViewModel: ObservableObject {
                 timer.invalidate()
                 self.countdownTimer = nil
                 self.countdownValue = nil
-                self.captureBurst()
+                self.commitCapture()
             }
         }
     }
 
-    private func captureBurst() {
+    private func commitCapture() {
+        guard experienceState == .almostReady else { return }
+        // EYE GATE: do not enter capturing if eyes are closed beyond blink grace.
+        guard eyesRecentlyOpen else {
+            abortCountdownForEyesClosed()
+            return
+        }
+
+        poseAtCapture = cameraManager.poseData
+        advanceExperienceState(to: .capturing)
+        resetCountdownState()
+
         let burstCount = strictMode ? 5 : 3
         cameraManager.captureBurst(count: burstCount) { [weak self] images in
             guard let self else { return }
@@ -106,32 +186,80 @@ final class AppViewModel: ObservableObject {
     }
 
     private func evaluateBurst(images: [PlatformImage]) {
-        guard !images.isEmpty else { return }
-        guard let pose = cameraManager.poseData else {
-            bestImage = images.first
-            showingResult = true
+        guard experienceState == .capturing else { return }
+        guard !images.isEmpty else {
+            guidanceMessage = "Capture failed"
+            advanceExperienceState(to: .revealing)
+            bestImage = nil
+            showingResult = false
             return
         }
 
+        let pose = poseAtCapture
         let scores = images.enumerated().map { index, image -> (PlatformImage, Double) in
+            guard let pose else {
+                return (image, Double(index) * -0.01)
+            }
+
             let centerScore = 1.0 - Double(abs(pose.horizontalOffset))
             let verticalScore = 1.0 - Double(abs(pose.verticalOffset))
             let tiltScore = 1.0 - min(1.0, abs(pose.headTilt) / 15.0)
-            let combined = (centerScore * 0.4 + verticalScore * 0.4 + tiltScore * 0.2) - Double(index) * 0.01
+            let combined = (centerScore * 0.4 + verticalScore * 0.35 + tiltScore * 0.25) - Double(index) * 0.01
             return (image, combined)
         }
 
         if let best = scores.max(by: { $0.1 < $1.1 })?.0 {
             bestImage = best
-            showingResult = true
+        } else {
+            bestImage = images.first
+        }
+
+        advanceExperienceState(to: .revealing)
+        if let best = bestImage {
+            processCapturedImage(best)
         }
     }
 
+    private func performReset() {
+        cancelCountdown()
+        bestImage = nil
+        poseAtCapture = nil
+        guidanceState = GuidanceState()
+        guidanceMessage = "Initializing…"
+        stabilityTracker.reset()
+        cameraManager.resetCaptureBuffers()
+        resetCountdownState()
+        lastEyeOpenTimestamp = nil
+        isProcessingImage = false
+        processingStatus = nil
+        advanceExperienceState(to: .idle)
+    }
+
     private func handlePose(_ pose: PoseData?) {
+        guard experienceState != .capturing,
+              experienceState != .revealing,
+              experienceState != .resetting else { return }
+
         guard cameraManager.availability == .ready else {
             guidanceState = GuidanceState()
+            guidanceMessage = cameraWarning ?? "Camera unavailable"
             return
         }
+
+        if countdownActive {
+            if let frozenGuidanceState {
+                guidanceState = frozenGuidanceState
+            }
+            if let frozenGuidanceMessage {
+                guidanceMessage = frozenGuidanceMessage
+            }
+            if let snapshot = readinessSnapshot {
+                guidanceState.readinessScore = snapshot
+            }
+            registerEyeOpen(from: pose)
+            return
+        }
+
         if let center = pose?.center {
             stabilityTracker.update(with: center)
         } else {
@@ -143,25 +271,78 @@ final class AppViewModel: ObservableObject {
                                                  strictMode: strictMode)
         guidanceState = evaluation.0
         guidanceMessage = evaluation.1
+        registerEyeOpen(from: pose)
 
-        let isReady = evaluation.0.readyForCapture
-
-        // Auto-start countdown when transitioning into a ready state
-        if isReady && !wasReadyForCapture && countdownValue == nil && !showingResult {
-            startCountdown()
+        if experienceState == .idle {
+            advanceExperienceState(to: .guiding)
         }
 
-        // Cancel countdown if readiness is lost
-        if !isReady && countdownValue != nil {
+        // EYE GATE: block advancement into almostReady while eyes are closed.
+        guard guidanceState.eyesOpen else {
             cancelCountdown()
-            guidanceMessage = strictMode ? "Hold steady to capture" : "Stay centered to capture"
+            return
         }
 
-        // Track previous readiness to detect transitions
-        wasReadyForCapture = isReady
+        if experienceState == .guiding, guidanceState.readyForCapture {
+            advanceExperienceState(to: .almostReady)
+            startCountdown()
+        } else if experienceState == .almostReady {
+            if !guidanceState.readyForCapture {
+                cancelCountdown()
+            } else if countdownValue == nil {
+                startCountdown()
+            }
+        }
     }
 
     var stabilityValue: CGFloat {
         stabilityTracker.stabilityValue
+    }
+
+    private func registerEyeOpen(from pose: PoseData?) {
+        if pose?.eyesOpen == true {
+            lastEyeOpenTimestamp = Date()
+        }
+    }
+
+    private var eyesRecentlyOpen: Bool {
+        if guidanceState.eyesOpen { return true }
+        guard let last = lastEyeOpenTimestamp else { return false }
+        return Date().timeIntervalSince(last) <= eyeOpenGraceWindow
+    }
+
+    private func resetCountdownState() {
+        countdownTimer?.invalidate()
+        countdownTimer = nil
+        countdownValue = nil
+        frozenGuidanceState = nil
+        frozenGuidanceMessage = nil
+        readinessSnapshot = nil
+    }
+
+    private func abortCountdownForEyesClosed() {
+        resetCountdownState()
+        advanceExperienceState(to: .guiding)
+    }
+
+    private func processCapturedImage(_ image: PlatformImage) {
+        isProcessingImage = true
+        processingStatus = "Processing portrait…"
+
+        Task {
+            do {
+                let generated = try await imageService.generatePortrait(from: image)
+                await MainActor.run {
+                    self.bestImage = generated
+                    self.processingStatus = nil
+                    self.isProcessingImage = false
+                }
+            } catch {
+                await MainActor.run {
+                    self.processingStatus = "Could not refine portrait. Showing original."
+                    self.isProcessingImage = false
+                }
+            }
+        }
     }
 }

@@ -10,38 +10,55 @@ struct ResultView: View {
     let image: PlatformImage
     let onRetake: () -> Void
     let onSave: (URL?) -> Void
+    let isProcessing: Bool
+    let statusMessage: String?
 
     @State private var saveMessage: String?
     @State private var saveError: Bool = false
+    @State private var appear = false
 
     var body: some View {
-        VStack(spacing: 16) {
+        VStack(spacing: 20) {
             Image(platformImage: image)
                 .resizable()
                 .scaledToFit()
-                .cornerRadius(12)
-                .shadow(radius: 8)
+                .cornerRadius(16)
+                .shadow(radius: 12)
                 .padding()
+                .scaleEffect(appear ? 1 : 0.96)
+                .opacity(appear ? 1 : 0)
+                .animation(.easeOut(duration: 0.3), value: appear)
 
-            HStack(spacing: 20) {
+            HStack(spacing: 16) {
                 Button("Retake", action: onRetake)
                     .buttonStyle(.bordered)
                     .keyboardShortcut("r", modifiers: .command)
+                    .disabled(isProcessing)
                 
-                Button("Save to Pictures") {
+                Button("Use Photo") {
                     saveImage()
                 }
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut("s", modifiers: .command)
+                .disabled(isProcessing)
             }
 
-            if let saveMessage {
+            if let statusMessage {
+                Text(statusMessage)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            } else if let saveMessage {
                 Text(saveMessage)
-                .font(.footnote)
-                .foregroundStyle(saveError ? .red : .secondary)
+                    .font(.footnote)
+                    .foregroundStyle(saveError ? .red : .secondary)
             }
         }
         .padding()
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .padding()
+        .onAppear {
+            appear = true
+        }
     }
 
     private func saveImage() {

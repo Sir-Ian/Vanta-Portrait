@@ -2,145 +2,65 @@ import SwiftUI
 
 struct GuidanceOverlay: View {
     let state: GuidanceState
+    let countdownValue: Int?
+    let countdownActive: Bool
+    let experienceState: ExperienceState
+    
+    private var readinessProgress: CGFloat {
+        CGFloat(min(max(state.readinessScore, 0), 1))
+    }
+    
+    private var ringColor: Color {
+        if countdownActive || experienceState == .capturing || experienceState == .revealing {
+            return Color.green.opacity(0.85)
+        }
+        return state.readyForCapture ? Color.green.opacity(0.8) : Color.white.opacity(0.6)
+    }
+    
+    private var countdownProgress: CGFloat {
+        guard countdownActive, let value = countdownValue else { return 0 }
+        let total = 3.0
+        let clamped = max(1.0, min(total, Double(value)))
+        return CGFloat((total - clamped + 1) / total)
+    }
     
     var body: some View {
         GeometryReader { geometry in
+            let size = min(geometry.size.width, geometry.size.height) * 0.5
+            let circleFrame = CGSize(width: size, height: size)
+            
             ZStack {
-                // 1. Dynamic Target Frame
-                // We want a frame that represents the ideal head position.
-                // It should be roughly centered and of appropriate size.
-                let frameWidth = geometry.size.width * 0.45
-                let frameHeight = geometry.size.height * 0.55
-                let frameRect = CGRect(
-                    x: (geometry.size.width - frameWidth) / 2,
-                    y: (geometry.size.height - frameHeight) / 2 - (geometry.size.height * 0.05), // Slightly above center
-                    width: frameWidth,
-                    height: frameHeight
-                )
+                Circle()
+                    .stroke(Color.white.opacity(0.15), lineWidth: 3)
+                    .frame(width: circleFrame.width, height: circleFrame.height)
                 
-                // Dimmed background with cutout
-                Color.black.opacity(0.4)
-                    .mask(
-                        Rectangle()
-                            .overlay(
-                                RoundedRectangle(cornerRadius: frameWidth * 0.4)
-                                    .frame(width: frameRect.width, height: frameRect.height)
-                                    .position(x: frameRect.midX, y: frameRect.midY)
-                                    .blendMode(.destinationOut)
-                            )
-                    )
+                Circle()
+                    .trim(from: 0, to: readinessProgress)
+                    .stroke(ringColor, style: StrokeStyle(lineWidth: 6, lineCap: .round))
+                    .frame(width: circleFrame.width, height: circleFrame.height)
+                    .rotationEffect(.degrees(-90))
+                    .animation(.easeInOut(duration: 0.35), value: readinessProgress)
+                    .scaleEffect(countdownActive ? 1.02 : 1.0)
+                    .animation(.easeInOut(duration: 0.4).repeatForever(autoreverses: true), value: countdownActive)
                 
-                // The Target Ring
-                RoundedRectangle(cornerRadius: frameWidth * 0.4)
-                    .stroke(statusColor, style: StrokeStyle(lineWidth: 4, lineCap: .round, dash: state.readyForCapture ? [] : [10, 10]))
-                    .frame(width: frameRect.width, height: frameRect.height)
-                    .position(x: frameRect.midX, y: frameRect.midY)
-                    .animation(.easeInOut(duration: 0.2), value: statusColor)
-                
-                // 2. Directional Arrows
-                if !state.centered || !state.verticalAligned {
-                    // Horizontal
-                    if state.horizontalOffset > 0.05 { // User is to the right, needs to move left
-                        DirectionalArrow(direction: .left)
-                            .position(x: frameRect.minX - 40, y: frameRect.midY)
-                    } else if state.horizontalOffset < -0.05 { // User is to the left, needs to move right
-                        DirectionalArrow(direction: .right)
-                            .position(x: frameRect.maxX + 40, y: frameRect.midY)
-                    }
-                    
-                    // Vertical
-                    // verticalOffset: + is down, - is up.
-                    // If offset is positive (user is low), we need them to move up.
-                    // Wait, let's check GuidanceEngine logic.
-                    // "verticalDiff > 0 ? Move up : Move down"
-                    // If verticalDiff is positive, it means pose.verticalOffset > target (-0.1).
-                    // So pose is e.g. 0.0 (center). Target is -0.1 (higher).
-                    // So user is lower than target. They need to move UP.
-                    
-                    let targetVerticalOffset: CGFloat = -0.1
-                    let verticalDiff = state.verticalOffset - targetVerticalOffset
-                    
-                    if verticalDiff > 0.05 { // User is too low
-                        DirectionalArrow(direction: .up)
-                            .position(x: frameRect.midX, y: frameRect.minY - 40)
-                    } else if verticalDiff < -0.05 { // User is too high
-                        DirectionalArrow(direction: .down)
-                            .position(x: frameRect.midX, y: frameRect.maxY + 40)
+                if countdownActive, let value = countdownValue {
+                    ZStack {
+                        Circle()
+                            .trim(from: 0, to: countdownProgress)
+                            .stroke(ringColor.opacity(0.9), style: StrokeStyle(lineWidth: 10, lineCap: .round))
+                            .frame(width: circleFrame.width, height: circleFrame.height)
+                            .rotationEffect(.degrees(-90))
+                            .animation(.easeInOut(duration: 0.3), value: countdownProgress)
+                        
+                        Text("\(value)")
+                            .font(.system(size: 44, weight: .bold, design: .rounded))
+                            .foregroundStyle(.primary)
+                            .transition(.opacity)
+                            .id(value)
                     }
                 }
-                
-                // 3. Eye Level Guide (Rule of Thirds)
-                // Eyes should be roughly at the top third line.
-                Path { path in
-                    let y = geometry.size.height * 0.38 // Approx eye level
-                    path.move(to: CGPoint(x: frameRect.minX + 20, y: y))
-                    path.addLine(to: CGPoint(x: frameRect.maxX - 20, y: y))
-                }
-                .stroke(Color.white.opacity(0.3), style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
-                
-                // 4. Distance/Size Feedback (Corner Brackets)
-                // If too far (face small), brackets expand or pulse?
-                // Let's keep it simple: The ring color handles "move closer/back" for now via GuidanceEngine message,
-                // but we could add specific icons.
             }
-        }
-        .allowsHitTesting(false)
-    }
-    
-    var statusColor: Color {
-        if state.readyForCapture {
-            return .green
-        } else if state.centered && state.verticalAligned && state.leveled {
-            // Position is good, maybe waiting for stability or expression
-            return .yellow
-        } else {
-            return .white.opacity(0.7)
-        }
-    }
-}
-
-struct DirectionalArrow: View {
-    enum Direction { case left, right, up, down }
-    let direction: Direction
-    
-    var body: some View {
-        Image(systemName: systemName)
-            .font(.system(size: 40, weight: .bold))
-            .foregroundColor(.white)
-            .shadow(color: .black.opacity(0.5), radius: 2, x: 0, y: 1)
-            .opacity(0.8)
-            .symbolEffect(.pulse, options: .repeating)
-    }
-    
-    var systemName: String {
-        switch direction {
-        case .left: return "arrow.left"
-        case .right: return "arrow.right"
-        case .up: return "arrow.up"
-        case .down: return "arrow.down"
-        }
-    }
-}
-
-struct GridOverlay: View {
-    var body: some View {
-        GeometryReader { geometry in
-            Path { path in
-                // Vertical lines
-                let thirdWidth = geometry.size.width / 3
-                path.move(to: CGPoint(x: thirdWidth, y: 0))
-                path.addLine(to: CGPoint(x: thirdWidth, y: geometry.size.height))
-                path.move(to: CGPoint(x: thirdWidth * 2, y: 0))
-                path.addLine(to: CGPoint(x: thirdWidth * 2, y: geometry.size.height))
-                
-                // Horizontal lines
-                let thirdHeight = geometry.size.height / 3
-                path.move(to: CGPoint(x: 0, y: thirdHeight))
-                path.addLine(to: CGPoint(x: geometry.size.width, y: thirdHeight))
-                path.move(to: CGPoint(x: 0, y: thirdHeight * 2))
-                path.addLine(to: CGPoint(x: geometry.size.width, y: thirdHeight * 2))
-            }
-            .stroke(Color.white.opacity(0.2), lineWidth: 1)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
         }
         .allowsHitTesting(false)
     }

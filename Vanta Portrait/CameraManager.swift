@@ -124,7 +124,11 @@ final class CameraManager: NSObject, ObservableObject {
                 #if os(iOS)
                 // Ensure correct orientation for Vision on iOS
                 if let connection = self.videoOutput.connection(with: .video) {
-                    if connection.isVideoOrientationSupported {
+                    if #available(iOS 17, *) {
+                        if connection.isVideoRotationAngleSupported(90) {
+                            connection.videoRotationAngle = 90
+                        }
+                    } else if connection.isVideoOrientationSupported {
                         connection.videoOrientation = .portrait
                     }
                     if connection.isVideoMirroringSupported {
@@ -237,6 +241,12 @@ final class CameraManager: NSObject, ObservableObject {
         expectedBurstCount = 0
         processedBurstCount = 0
         burstCompletion = nil
+    }
+
+    func resetCaptureBuffers() {
+        burstLock.lock()
+        resetBurstState()
+        burstLock.unlock()
     }
 
     private func failBurstCapture(reason: String) {
