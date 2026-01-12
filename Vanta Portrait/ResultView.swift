@@ -1,17 +1,22 @@
 import SwiftUI
+#if os(macOS)
 import AppKit
+#else
+import UIKit
+import Photos
+#endif
 
 struct ResultView: View {
-    let image: NSImage
+    let image: PlatformImage
     let onRetake: () -> Void
-    let onSave: (URL) -> Void
+    let onSave: (URL?) -> Void
 
     @State private var saveMessage: String?
     @State private var saveError: Bool = false
 
     var body: some View {
         VStack(spacing: 16) {
-            Image(nsImage: image)
+            Image(platformImage: image)
                 .resizable()
                 .scaledToFit()
                 .cornerRadius(12)
@@ -24,15 +29,7 @@ struct ResultView: View {
                     .keyboardShortcut("r", modifiers: .command)
                 
                 Button("Save to Pictures") {
-                    do {
-                        let url = try saveToPictures()
-                        onSave(url)
-                        saveMessage = "Saved to \(url.lastPathComponent)"
-                        saveError = false
-                    } catch {
-                        saveMessage = "Failed to save: \(error.localizedDescription)"
-                        saveError = true
-                    }
+                    saveImage()
                 }
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut("s", modifiers: .command)
@@ -40,14 +37,31 @@ struct ResultView: View {
 
             if let saveMessage {
                 Text(saveMessage)
-                    .font(.footnote)
-                    .foregroundStyle(saveError ? .red : .secondary)
+                .font(.footnote)
+                .foregroundStyle(saveError ? .red : .secondary)
             }
         }
         .padding()
     }
 
-    private func saveToPictures() throws -> URL {
+    private func saveImage() {
+        #if os(macOS)
+        do {
+            let url = try saveToPicturesMacOS()
+            onSave(url)
+            saveMessage = "Saved to \(url.lastPathComponent)"
+            saveError = false
+        } catch {
+            saveMessage = "Failed to save: \(error.localizedDescription)"
+            saveError = true
+        }
+        #else
+        saveToPhotosLibraryIOS()
+        #endif
+    }
+
+    #if os(macOS)
+    private func saveToPicturesMacOS() throws -> URL {
         guard let pictures = FileManager.default.urls(for: .picturesDirectory, in: .userDomainMask).first else {
             throw SaveError.directoryNotFound
         }
@@ -70,6 +84,34 @@ struct ResultView: View {
         try data.write(to: url, options: .atomic)
         return url
     }
+    #else
+    private func saveToPhotosLibraryIOS() {
+        PHPhotoLibrary.requestAuthorization { status in
+            guard status == .authorized || status == .limited else {
+                DispatchQueue.main.async {
+                    saveMessage = "Photos access denied"
+                    saveError = true
+                }
+                return
+            }
+            
+            PHPhotoLibrary.shared().performChanges {
+                PHAssetChangeRequest.creationRequestForAsset(from: image)
+            } completionHandler: { success, error in
+                DispatchQueue.main.async {
+                    if success {
+                        saveMessage = "Saved to Photos"
+                        saveError = false
+                        onSave(nil)
+                    } else {
+                        saveMessage = "Failed to save: \(error?.localizedDescription ?? "Unknown error")"
+                        saveError = true
+                    }
+                }
+            }
+        }
+    }
+    #endif
     
     enum SaveError: LocalizedError {
         case directoryNotFound

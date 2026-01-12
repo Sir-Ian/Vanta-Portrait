@@ -2,16 +2,18 @@
 
 struct ContentView: View {
     @StateObject private var viewModel = AppViewModel()
+    @State private var showGrid = false
+    @State private var showSilhouette = true
     
     var body: some View {
         ZStack {
             if viewModel.showingResult, let image = viewModel.bestImage {
-                ResultView(image: image) {
+                ResultView(image: image, onRetake: {
                     viewModel.retake()
-                } onSave: { url in
+                }, onSave: { url in
                     // Could add analytics or other post-save actions here
-                    print("Photo saved to: \(url.path)")
-                }
+                    print("Photo saved")
+                })
             } else {
                 mainCaptureView
             }
@@ -33,6 +35,14 @@ struct ContentView: View {
                 CameraPreviewView(manager: viewModel.cameraManager)
                     .accessibilityLabel("Camera preview")
                     .accessibilityValue(viewModel.guidanceMessage)
+                    .overlay {
+                        if showSilhouette {
+                            GuidanceOverlay(state: viewModel.guidanceState)
+                        }
+                        if showGrid {
+                            GridOverlay()
+                        }
+                    }
                     .overlay(alignment: .top) {
                         if let warning = viewModel.cameraWarning {
                             statusBanner(text: warning)
@@ -58,12 +68,14 @@ struct ContentView: View {
                 
                 VStack(spacing: 8) {
                     Text(viewModel.guidanceMessage)
-                        .font(.title3)
-                        .padding(12)
+                        .font(.system(size: 28, weight: .bold, design: .rounded))
+                        .foregroundColor(guidanceColor)
+                        .padding(16)
                         .frame(maxWidth: .infinity)
-                        .background(.thinMaterial)
-                        .cornerRadius(12)
+                        .background(.ultraThinMaterial)
+                        .cornerRadius(16)
                         .padding()
+                        .shadow(radius: 4)
                         .animation(.easeInOut(duration: 0.2), value: viewModel.guidanceMessage)
                         .accessibilityAddTraits(.isStaticText)
                     controlBar
@@ -93,6 +105,16 @@ struct ContentView: View {
             }
         }
     }
+    
+    private var guidanceColor: Color {
+        if viewModel.guidanceState.readyForCapture {
+            return .green
+        } else if viewModel.guidanceMessage.contains("Move") || viewModel.guidanceMessage.contains("Turn") {
+            return .orange
+        } else {
+            return .primary
+        }
+    }
 
     private func statusBanner(text: String) -> some View {
         Text(text)
@@ -113,11 +135,15 @@ struct ContentView: View {
                 .accessibilityLabel("Strict mode toggle")
                 .accessibilityValue(viewModel.strictMode ? "On" : "Off")
             
-            Button(action: viewModel.toggleDebugPanel) {
-                Label(viewModel.showDebugPanel ? "Hide Debug" : "Show Debug", systemImage: "waveform")
+            Toggle(isOn: $showSilhouette) {
+                Label("Guide", systemImage: "person.fill.viewfinder")
             }
-            .help("Toggle debug panel (⌘⇧D)")
-            .accessibilityLabel(viewModel.showDebugPanel ? "Hide debug panel" : "Show debug panel")
+            .toggleStyle(.button)
+            
+            Toggle(isOn: $showGrid) {
+                Label("Grid", systemImage: "grid")
+            }
+            .toggleStyle(.button)
             
             Spacer()
             

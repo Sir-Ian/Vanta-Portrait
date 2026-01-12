@@ -2,7 +2,11 @@ import Foundation
 import AVFoundation
 import Vision
 import Combine
+#if os(macOS)
 import AppKit
+#else
+import UIKit
+#endif
 
 final class CameraManager: NSObject, ObservableObject {
     let session = AVCaptureSession()
@@ -19,8 +23,8 @@ final class CameraManager: NSObject, ObservableObject {
     private lazy var photoDelegate = PhotoCaptureDelegate(owner: self)
     private lazy var videoDelegate = VideoDataDelegate(owner: self)
 
-    private var burstImages: [NSImage] = []
-    private var burstCompletion: (([NSImage]) -> Void)?
+    private var burstImages: [PlatformImage] = []
+    private var burstCompletion: (([PlatformImage]) -> Void)?
     private var expectedBurstCount = 0
     private var processedBurstCount = 0
     private var isConfigured = false
@@ -67,7 +71,14 @@ final class CameraManager: NSObject, ObservableObject {
             self.session.beginConfiguration()
             self.session.sessionPreset = .high
 
-            guard let device = AVCaptureDevice.default(for: .video) else {
+            #if os(iOS)
+            // Prefer front camera on iOS
+            let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .front) ?? AVCaptureDevice.default(for: .video)
+            #else
+            let device = AVCaptureDevice.default(for: .video)
+            #endif
+            
+            guard let device else {
                 self.session.commitConfiguration()
                 DispatchQueue.main.async {
                     self.availability = .noDevice
@@ -97,7 +108,9 @@ final class CameraManager: NSObject, ObservableObject {
             if self.session.canAddOutput(self.photoOutput) {
                 self.session.addOutput(self.photoOutput)
                 if #available(macOS 13.0, iOS 16.0, *) {
-                    // On newer OS versions, default max dimensions are fine; no explicit setting needed here.
+                    if let maxDims = device.activeFormat.supportedMaxPhotoDimensions.last {
+                        self.photoOutput.maxPhotoDimensions = maxDims
+                    }
                 } else {
                     self.photoOutput.isHighResolutionCaptureEnabled = true
                 }
@@ -107,6 +120,18 @@ final class CameraManager: NSObject, ObservableObject {
                 self.videoOutput.alwaysDiscardsLateVideoFrames = true
                 self.videoOutput.setSampleBufferDelegate(videoDelegate, queue: sampleBufferQueue)
                 self.session.addOutput(self.videoOutput)
+                
+                #if os(iOS)
+                // Ensure correct orientation for Vision on iOS
+                if let connection = self.videoOutput.connection(with: .video) {
+                    if connection.isVideoOrientationSupported {
+                        connection.videoOrientation = .portrait
+                    }
+                    if connection.isVideoMirroringSupported {
+                        connection.isVideoMirrored = true
+                    }
+                }
+                #endif
             }
 
             self.session.commitConfiguration()
@@ -119,7 +144,7 @@ final class CameraManager: NSObject, ObservableObject {
     }
 
     @MainActor
-    func captureBurst(count: Int = 3, completion: @escaping ([NSImage]) -> Void) {
+    func captureBurst(count: Int = 3, completion: @escaping ([PlatformImage]) -> Void) {
         guard count > 0 else {
             completion([])
             return
@@ -156,7 +181,7 @@ final class CameraManager: NSObject, ObservableObject {
             for _ in 0..<count {
                 let settings = AVCapturePhotoSettings()
                 if #available(macOS 13.0, iOS 16.0, *) {
-                    // Use default settings; maxPhotoDimensions API isn't available on older SDKs in this project.
+                    settings.maxPhotoDimensions = self.photoOutput.maxPhotoDimensions
                 } else {
                     settings.isHighResolutionPhotoEnabled = true
                 }
@@ -169,7 +194,7 @@ final class CameraManager: NSObject, ObservableObject {
         poseData = pose
     }
 
-    fileprivate func didProcessPhoto(image: NSImage?, error: Error?) {
+    fileprivate func didProcessPhoto(image: PlatformImage?, error: Error?) {
         burstLock.lock()
         defer { burstLock.unlock() }
         
@@ -259,7 +284,7 @@ private final class PhotoCaptureDelegate: NSObject, AVCapturePhotoCaptureDelegat
         let data = photo.fileDataRepresentation()
         Task { @MainActor [weak self] in
             guard let owner = self?.owner else { return }
-            let image = data.flatMap { NSImage(data: $0) }
+            let image = data.flatMap { PlatformImage(data: $0) }
             owner.didProcessPhoto(image: image, error: error)
         }
     }
@@ -280,13 +305,25 @@ private final class VideoDataDelegate: NSObject, AVCaptureVideoDataOutputSampleB
         // Retain the pixel buffer for safe async processing
         CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
         
-        processingQueue.async { [weak self, pixelBuffer] in
+        struct SendableBuffer: @unchecked Sendable {
+            let buffer: CVPixelBuffer
+        }
+        let sendableBuffer = SendableBuffer(buffer: pixelBuffer)
+        
+        processingQueue.async { [weak self] in
+            let pixelBuffer = sendableBuffer.buffer
             guard let self else {
                 CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly)
                 return
             }
             
-            self.poseDetector.process(pixelBuffer: pixelBuffer) { pose in
+            #if os(iOS)
+            let orientation: CGImagePropertyOrientation = .leftMirrored // Front camera usually needs this
+            #else
+            let orientation: CGImagePropertyOrientation = .up
+            #endif
+            
+            self.poseDetector.process(pixelBuffer: pixelBuffer, orientation: orientation) { pose in
                 CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly)
                 Task { @MainActor in
                     self.owner?.publishPose(pose)

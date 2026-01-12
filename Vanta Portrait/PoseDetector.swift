@@ -5,6 +5,7 @@ import CoreGraphics
 struct PoseData {
     let boundingBox: CGRect
     let headTilt: Double
+    let headYaw: Double
     let eyesOpen: Bool
     let timestamp: Date
 
@@ -24,7 +25,7 @@ struct PoseData {
 final class PoseDetector {
     private let requestHandlerQueue = DispatchQueue(label: "pose.detector.queue")
 
-    func process(pixelBuffer: CVPixelBuffer, completion: @escaping (PoseData?) -> Void) {
+    func process(pixelBuffer: CVPixelBuffer, orientation: CGImagePropertyOrientation = .up, completion: @escaping (PoseData?) -> Void) {
         let request = VNDetectFaceLandmarksRequest { request, error in
             if let error {
                 print("Face detection error: \(error.localizedDescription)")
@@ -39,15 +40,18 @@ final class PoseDetector {
 
             let tilt = self.estimateTilt(from: observation)
             let eyesOpen = self.estimateEyesOpen(from: observation)
+            let yaw = observation.yaw?.doubleValue ?? 0
+            
             let pose = PoseData(boundingBox: observation.boundingBox,
                                 headTilt: tilt,
+                                headYaw: yaw,
                                 eyesOpen: eyesOpen,
                                 timestamp: Date())
             completion(pose)
         }
 
         requestHandlerQueue.async {
-            let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .up, options: [:])
+            let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: orientation, options: [:])
             do {
                 try handler.perform([request])
             } catch {

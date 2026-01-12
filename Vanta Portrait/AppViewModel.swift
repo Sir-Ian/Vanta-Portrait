@@ -1,6 +1,10 @@
 import Foundation
 import Combine
+#if os(macOS)
 import AppKit
+#else
+import UIKit
+#endif
 import CoreGraphics
 
 final class AppViewModel: ObservableObject {
@@ -9,7 +13,7 @@ final class AppViewModel: ObservableObject {
     @Published var strictMode = true
     @Published var countdownValue: Int?
     @Published var showingResult = false
-    @Published var bestImage: NSImage?
+    @Published var bestImage: PlatformImage?
     @Published var showDebugPanel = false
     @Published var cameraWarning: String?
     
@@ -101,7 +105,7 @@ final class AppViewModel: ObservableObject {
         }
     }
 
-    private func evaluateBurst(images: [NSImage]) {
+    private func evaluateBurst(images: [PlatformImage]) {
         guard !images.isEmpty else { return }
         guard let pose = cameraManager.poseData else {
             bestImage = images.first
@@ -109,7 +113,7 @@ final class AppViewModel: ObservableObject {
             return
         }
 
-        let scores = images.enumerated().map { index, image -> (NSImage, Double) in
+        let scores = images.enumerated().map { index, image -> (PlatformImage, Double) in
             let centerScore = 1.0 - Double(abs(pose.horizontalOffset))
             let verticalScore = 1.0 - Double(abs(pose.verticalOffset))
             let tiltScore = 1.0 - min(1.0, abs(pose.headTilt) / 15.0)
