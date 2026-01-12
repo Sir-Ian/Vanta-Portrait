@@ -43,15 +43,11 @@ final class AppViewModel: ObservableObject {
     @Published var isProcessingImage = false
     @Published var processingStatus: String?
 
-    let cameraManager = CameraManager()
+    let cameraManager: CameraManager
     private let guidanceEngine = GuidanceEngine()
     private let stabilityTracker = StabilityTracker()
-    private let imageService = ImageGenerationService(config: AzureImageConfig(
-        apiKey: "<AZURE_OPENAI_API_KEY>", // Inject real key via config/env at runtime.
-        endpoint: "<AZURE_OPENAI_ENDPOINT>",
-        deployment: "<AZURE_OPENAI_DEPLOYMENT>",
-        apiVersion: "2023-12-01-preview"
-    ))
+    private let imageGenerator: ImageGenerating
+    private let isUITestMode: Bool
     private var cancellables = Set<AnyCancellable>()
     private var countdownTimer: Timer?
     private var poseAtCapture: PoseData?
@@ -60,16 +56,32 @@ final class AppViewModel: ObservableObject {
     private var frozenGuidanceMessage: String?
     private var lastEyeOpenTimestamp: Date?
     private let eyeOpenGraceWindow: TimeInterval = 0.3
+    private let mockAzureSuccess = ProcessInfo.processInfo.arguments.contains("-MockAzureSuccess")
+    private let mockAzureFailure = ProcessInfo.processInfo.arguments.contains("-MockAzureFailure")
 
-    init() {
-        cameraManager.$poseData
+    init(imageGenerator: ImageGenerating? = nil,
+         cameraManager: CameraManager? = nil,
+         uiTestMode: Bool = ProcessInfo.processInfo.arguments.contains("-UITestMode")) {
+        self.isUITestMode = uiTestMode
+        self.cameraManager = cameraManager ?? CameraManager(skipSetup: uiTestMode)
+        if let generator = imageGenerator {
+            self.imageGenerator = generator
+        } else if uiTestMode, mockAzureFailure {
+            self.imageGenerator = MockImageGenerator(result: .failure(ImageGenerationError.serviceError("Mock failure")))
+        } else if uiTestMode || mockAzureSuccess {
+            self.imageGenerator = MockImageGenerator(result: .success(Self.sampleProcessedImage()))
+        } else {
+            self.imageGenerator = ImageGenerationService(config: AzureImageConfig.fromEnvironment)
+        }
+
+        self.cameraManager.$poseData
             .receive(on: DispatchQueue.main)
             .sink { [weak self] pose in
                 self?.handlePose(pose)
             }
             .store(in: &cancellables)
 
-        cameraManager.$availability
+        self.cameraManager.$availability
             .receive(on: DispatchQueue.main)
             .sink { [weak self] availability in
                 self?.cameraWarning = availability.message
@@ -81,6 +93,14 @@ final class AppViewModel: ObservableObject {
                 }
             }
             .store(in: &cancellables)
+
+        if uiTestMode {
+            let sample = Self.sampleImage()
+            bestImage = sample
+            showingResult = true
+            experienceState = .revealing
+            processCapturedImage(sample)
+        }
     }
 
     func toggleStrictMode() {
@@ -326,12 +346,13 @@ final class AppViewModel: ObservableObject {
     }
 
     private func processCapturedImage(_ image: PlatformImage) {
+        guard !isProcessingImage else { return }
         isProcessingImage = true
         processingStatus = "Processing portrait…"
 
         Task {
             do {
-                let generated = try await imageService.generatePortrait(from: image)
+                let generated = try await imageGenerator.generatePortrait(from: image)
                 await MainActor.run {
                     self.bestImage = generated
                     self.processingStatus = nil
@@ -339,9 +360,65 @@ final class AppViewModel: ObservableObject {
                 }
             } catch {
                 await MainActor.run {
-                    self.processingStatus = "Could not refine portrait. Showing original."
+                    self.processingStatus = "Couldn’t reach the portrait service. Using the original photo."
+                    #if DEBUG
+                    print("[AzureImage] generation failed: \(error)")
+                    #endif
                     self.isProcessingImage = false
                 }
+            }
+        }
+    }
+
+    private static func sampleImage() -> PlatformImage {
+        #if os(macOS)
+        let size = NSSize(width: 512, height: 512)
+        let image = NSImage(size: size)
+        image.lockFocus()
+        NSColor(calibratedRed: 0.3, green: 0.5, blue: 0.9, alpha: 1).setFill()
+        NSRect(origin: .zero, size: size).fill()
+        image.unlockFocus()
+        return image
+        #else
+        let size = CGSize(width: 512, height: 512)
+        let renderer = UIGraphicsImageRenderer(size: size)
+        let img = renderer.image { context in
+            UIColor(red: 0.3, green: 0.5, blue: 0.9, alpha: 1).setFill()
+            context.fill(CGRect(origin: .zero, size: size))
+        }
+        return img
+        #endif
+    }
+
+    private static func sampleProcessedImage() -> PlatformImage {
+        #if os(macOS)
+        let size = NSSize(width: 512, height: 512)
+        let image = NSImage(size: size)
+        image.lockFocus()
+        NSColor(calibratedRed: 0.2, green: 0.7, blue: 0.4, alpha: 1).setFill()
+        NSRect(origin: .zero, size: size).fill()
+        image.unlockFocus()
+        return image
+        #else
+        let size = CGSize(width: 512, height: 512)
+        let renderer = UIGraphicsImageRenderer(size: size)
+        let img = renderer.image { context in
+            UIColor(red: 0.2, green: 0.7, blue: 0.4, alpha: 1).setFill()
+            context.fill(CGRect(origin: .zero, size: size))
+        }
+        return img
+        #endif
+    }
+
+    private struct MockImageGenerator: ImageGenerating {
+        let result: Result<PlatformImage, Error>
+        func generatePortrait(from image: PlatformImage) async throws -> PlatformImage {
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            switch result {
+            case .success(let processed):
+                return processed
+            case .failure(let error):
+                throw error
             }
         }
     }

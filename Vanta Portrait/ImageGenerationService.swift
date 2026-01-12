@@ -11,36 +11,65 @@ struct AzureImageConfig {
     let endpoint: String
     let deployment: String
     let apiVersion: String
+
+    static var fromEnvironment: AzureImageConfig {
+        let env = ProcessInfo.processInfo.environment
+        let envKey = env["AZURE_OPENAI_API_KEY"]
+        let key = envKey?.isEmpty == false && envKey != "<AZURE_OPENAI_API_KEY>" ? envKey! : AppSecrets.azureOpenAIKey
+        return AzureImageConfig(
+            apiKey: key,
+            endpoint: "https://aistudio-foundry-east-us-2.cognitiveservices.azure.com",
+            deployment: "gpt-image-1.5",
+            apiVersion: "2024-02-01"
+        )
+    }
+}
+
+protocol ImageGenerating {
+    func generatePortrait(from image: PlatformImage) async throws -> PlatformImage
 }
 
 enum ImageGenerationError: LocalizedError {
     case missingAPIKey
     case encodingFailed
-    case networkFailure(status: Int)
+    case dnsBlockedOrHostNotFound
+    case noInternet
+    case unauthorizedOrForbidden
     case invalidResponse
     case decodeFailed
+    case serviceError(String)
 
     var errorDescription: String? {
         switch self {
         case .missingAPIKey: return "API key not configured"
         case .encodingFailed: return "Could not encode image"
-        case .networkFailure(let status): return "Network error (\(status))"
+        case .dnsBlockedOrHostNotFound: return "DNS lookup failed or host unreachable"
+        case .noInternet: return "No internet connection"
+        case .unauthorizedOrForbidden: return "Unauthorized request"
         case .invalidResponse: return "Invalid response"
         case .decodeFailed: return "Could not decode generated image"
+        case .serviceError(let message): return message
         }
     }
 }
 
-final class ImageGenerationService {
+final class ImageGenerationService: ImageGenerating {
     private let config: AzureImageConfig
     private let session: URLSession
     private let prompt: String = """
 Using the provided image of the subject as reference, create a clean, realistic studio portrait inspired by the visual conventions of new-graduate job-hunting photos. If a person is present, preserve the subject's facial features, proportions, and identity exactly as shown, without beautifying or altering their face. If not, if not, apply the same restrained studio lighting, neutral background, and formal framing to the object or scene. Present the subject in a centered, front-facing composition wearing conservative, entry-level business attire, with neat grooming and a neutral, polite expression. Use flat, even studio lighting that minimizes shadows and emphasizes clarity, paired with a plain light blue, pale gray, or white background. The framing should be tightly cropped, symmetrical, and formal, with a restrained, slightly earnest mood that reflects professionalism, sincerity, and readiness for a job.
 """
 
-    init(config: AzureImageConfig, session: URLSession = .shared) {
+    init(config: AzureImageConfig, session: URLSession? = nil) {
         self.config = config
-        self.session = session
+        if let session {
+            self.session = session
+        } else {
+            let configuration = URLSessionConfiguration.default
+            configuration.timeoutIntervalForRequest = 60
+            configuration.timeoutIntervalForResource = 60
+            self.session = URLSession(configuration: configuration)
+        }
     }
 
     func generatePortrait(from image: PlatformImage) async throws -> PlatformImage {
@@ -57,7 +86,7 @@ Using the provided image of the subject as reference, create a clean, realistic 
             throw ImageGenerationError.invalidResponse
         }
 
-        var request = URLRequest(url: url)
+        var request = URLRequest(url: url, timeoutInterval: 60)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(config.apiKey, forHTTPHeaderField: "api-key")
@@ -71,15 +100,40 @@ Using the provided image of the subject as reference, create a clean, realistic 
 
         request.httpBody = try JSONSerialization.data(withJSONObject: body, options: [])
 
-        let (data, response) = try await session.data(for: request)
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch let error as URLError {
+            throw mapURLError(error)
+        } catch {
+            throw ImageGenerationError.invalidResponse
+        }
+
         guard let httpResponse = response as? HTTPURLResponse else {
             throw ImageGenerationError.invalidResponse
         }
         guard (200...299).contains(httpResponse.statusCode) else {
-            throw ImageGenerationError.networkFailure(status: httpResponse.statusCode)
+            let bodyPreview = String(data: data, encoding: .utf8) ?? ""
+            debugPrint("[AzureImage] HTTP \(httpResponse.statusCode) body: \(bodyPreview)")
+            switch httpResponse.statusCode {
+            case 401, 403:
+                throw ImageGenerationError.unauthorizedOrForbidden
+            default:
+                if let message = AzureServiceError.decodeMessage(from: data) {
+                    throw ImageGenerationError.serviceError(message)
+                } else {
+                    throw ImageGenerationError.invalidResponse
+                }
+            }
         }
 
-        let decoded = try JSONDecoder().decode(ImageGenerationResponse.self, from: data)
+        let decoded: ImageGenerationResponse
+        do {
+            decoded = try JSONDecoder().decode(ImageGenerationResponse.self, from: data)
+        } catch {
+            throw ImageGenerationError.invalidResponse
+        }
         guard let base64 = decoded.data.first?.b64_json,
               let resultData = Data(base64Encoded: base64),
               let resultImage = PlatformImage.azureInit(data: resultData) else {
@@ -87,6 +141,19 @@ Using the provided image of the subject as reference, create a clean, realistic 
         }
 
         return resultImage
+    }
+
+    private func mapURLError(_ error: URLError) -> ImageGenerationError {
+        switch error.code {
+        case .cannotFindHost, .cannotConnectToHost, .dnsLookupFailed:
+            return .dnsBlockedOrHostNotFound
+        case .notConnectedToInternet:
+            return .noInternet
+        case .timedOut:
+            return .serviceError("Request timed out")
+        default:
+            return .invalidResponse
+        }
     }
 }
 
@@ -98,6 +165,18 @@ private struct ImageGenerationResponse: Decodable {
     let data: [DataItem]
 }
 
+private enum AzureServiceError {
+    struct ErrorPayload: Decodable {
+        struct InnerError: Decodable { let message: String? }
+        let error: InnerError?
+    }
+
+    static func decodeMessage(from data: Data) -> String? {
+        guard let decoded = try? JSONDecoder().decode(ErrorPayload.self, from: data) else { return nil }
+        return decoded.error?.message
+    }
+}
+
 private extension PlatformImage {
     func azureJPEGData(compressionQuality: CGFloat) -> Data? {
         #if os(macOS)
@@ -105,7 +184,7 @@ private extension PlatformImage {
               let bitmap = NSBitmapImageRep(data: tiff) else { return nil }
         return bitmap.representation(using: .jpeg, properties: [.compressionFactor: compressionQuality])
         #else
-        return UIImageJPEGRepresentation(self, compressionQuality)
+        return self.jpegData(compressionQuality: compressionQuality)
         #endif
     }
 
@@ -115,7 +194,7 @@ private extension PlatformImage {
               let bitmap = NSBitmapImageRep(data: tiff) else { return nil }
         return bitmap.representation(using: .png, properties: [:])
         #else
-        return UIImagePNGRepresentation(self)
+        return self.pngData()
         #endif
     }
 

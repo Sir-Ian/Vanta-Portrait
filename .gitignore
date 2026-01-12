@@ -36,3 +36,6 @@ Carthage/
 ProjectHaloLogs/
 CapturedImages/
 Temp/
+
+#env keys 
+AppSecrets.swift

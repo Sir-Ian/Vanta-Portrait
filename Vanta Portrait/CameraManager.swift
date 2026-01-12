@@ -29,10 +29,16 @@ final class CameraManager: NSObject, ObservableObject {
     private var processedBurstCount = 0
     private var isConfigured = false
     private let burstLock = NSLock() // Thread-safe burst state access
+    private let skipSetup: Bool
 
-    override init() {
+    init(skipSetup: Bool = false) {
+        self.skipSetup = skipSetup
         super.init()
-        requestCameraAccessIfNeeded()
+        if skipSetup {
+            availability = .ready
+        } else {
+            requestCameraAccessIfNeeded()
+        }
     }
 
     private func requestCameraAccessIfNeeded() {
