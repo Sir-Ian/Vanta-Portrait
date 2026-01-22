@@ -58,12 +58,20 @@ final class AppViewModel: ObservableObject {
     private let eyeOpenGraceWindow: TimeInterval = 0.3
     private let mockAzureSuccess = ProcessInfo.processInfo.arguments.contains("-MockAzureSuccess")
     private let mockAzureFailure = ProcessInfo.processInfo.arguments.contains("-MockAzureFailure")
+    private let uiTestStatusFile = ProcessInfo.processInfo.environment["UITestStatusFile"]
+    private var uiTestImageTag: String?
 
     init(imageGenerator: ImageGenerating? = nil,
          cameraManager: CameraManager? = nil,
-         uiTestMode: Bool = ProcessInfo.processInfo.arguments.contains("-UITestMode")) {
+         uiTestMode: Bool = ProcessInfo.processInfo.arguments.contains("-UITestMode"),
+         uiTestSampleImage: PlatformImage? = nil) {
         self.isUITestMode = uiTestMode
         self.cameraManager = cameraManager ?? CameraManager(skipSetup: uiTestMode)
+        #if DEBUG
+        if uiTestMode {
+            print("[UITest] AppViewModel init with status file: \(uiTestStatusFile ?? "nil")")
+        }
+        #endif
         if let generator = imageGenerator {
             self.imageGenerator = generator
         } else if uiTestMode, mockAzureFailure {
@@ -95,11 +103,19 @@ final class AppViewModel: ObservableObject {
             .store(in: &cancellables)
 
         if uiTestMode {
-            let sample = Self.sampleImage()
+            #if DEBUG
+            print("[UITestMode] initializing with mockSuccess=\(mockAzureSuccess) mockFailure=\(mockAzureFailure)")
+            #endif
+            let sample = uiTestSampleImage ?? Self.sampleImage()
             bestImage = sample
             showingResult = true
             experienceState = .revealing
+            uiTestImageTag = "original"
+            recordUITestStatus(note: "initialized")
             processCapturedImage(sample)
+            #if DEBUG
+            print("[UITestMode] showingResult=\(showingResult), status=\(String(describing: processingStatus))")
+            #endif
         }
     }
 
@@ -349,6 +365,7 @@ final class AppViewModel: ObservableObject {
         guard !isProcessingImage else { return }
         isProcessingImage = true
         processingStatus = "Processing portrait…"
+        recordUITestStatus(note: "processing")
 
         Task {
             do {
@@ -357,6 +374,8 @@ final class AppViewModel: ObservableObject {
                     self.bestImage = generated
                     self.processingStatus = nil
                     self.isProcessingImage = false
+                    self.uiTestImageTag = "processed"
+                    self.recordUITestStatus(note: "processed")
                 }
             } catch {
                 await MainActor.run {
@@ -365,6 +384,7 @@ final class AppViewModel: ObservableObject {
                     print("[AzureImage] generation failed: \(error)")
                     #endif
                     self.isProcessingImage = false
+                    self.recordUITestStatus(note: "fallback")
                 }
             }
         }
@@ -420,6 +440,38 @@ final class AppViewModel: ObservableObject {
             case .failure(let error):
                 throw error
             }
+        }
+    }
+
+    private struct UITestStatusPayload: Codable {
+        let note: String
+        let processingStatus: String?
+        let isProcessing: Bool
+        let imageTag: String?
+    }
+
+    private func recordUITestStatus(note: String) {
+        guard let path = uiTestStatusFile else { return }
+        let payload = UITestStatusPayload(note: note, processingStatus: processingStatus, isProcessing: isProcessingImage, imageTag: uiTestImageTag)
+        guard let data = try? JSONEncoder().encode(payload) else { return }
+        let url: URL
+        let candidate = URL(fileURLWithPath: path)
+        if candidate.path.hasPrefix("/") {
+            url = candidate
+        } else {
+            let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first ?? URL(fileURLWithPath: NSTemporaryDirectory())
+            url = base.appendingPathComponent(path)
+        }
+        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        #if DEBUG
+        print("[UITest] status \(note) -> \(url.path)")
+        #endif
+        do {
+            try data.write(to: url, options: .atomic)
+        } catch {
+            #if DEBUG
+            print("[UITest] failed to write status: \(error)")
+            #endif
         }
     }
 }

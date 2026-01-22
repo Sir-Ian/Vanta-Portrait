@@ -47,6 +47,7 @@ struct ResultView: View {
                 Text(statusMessage)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("resultStatus")
             } else if let saveMessage {
                 Text(saveMessage)
                     .font(.footnote)

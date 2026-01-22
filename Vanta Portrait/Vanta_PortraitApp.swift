@@ -7,6 +7,9 @@
 
 import SwiftUI
 import Network
+#if os(macOS)
+import AppKit
+#endif
 
 @main
 struct Vanta_PortraitApp: App {
@@ -15,6 +18,12 @@ struct Vanta_PortraitApp: App {
         let desc = Bundle.main.object(forInfoDictionaryKey: "NSCameraUsageDescription") as? String ?? "nil"
         print("[Debug] NSCameraUsageDescription:", desc)
         debugNetworkPreflight()
+        #endif
+
+        #if os(macOS)
+        if ProcessInfo.processInfo.arguments.contains("-UITestMode") {
+            NSApplication.shared.activate(ignoringOtherApps: true)
+        }
         #endif
     }
 
@@ -28,6 +37,8 @@ struct Vanta_PortraitApp: App {
     private func debugNetworkPreflight() {
         let isSandboxed = ProcessInfo.processInfo.environment["APP_SANDBOX_CONTAINER_ID"] != nil
         let platform = ProcessInfo.processInfo.operatingSystemVersionString
+        print("[Debug] Launch arguments: \(ProcessInfo.processInfo.arguments)")
+        print("[Debug] UITestStatusFile: \(ProcessInfo.processInfo.environment["UITestStatusFile"] ?? "nil")")
         print("[Debug] Sandbox: \(isSandboxed ? "enabled" : "unknown/disabled"), Platform: \(platform)")
 
         let host = "aistudio-foundry-east-us-2.cognitiveservices.azure.com"

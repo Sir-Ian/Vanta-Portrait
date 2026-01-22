@@ -8,106 +8,94 @@ final class ImageGenerationServiceTests: XCTestCase {
     private let apiVersion = "2024-02-01"
 
     func testRequestShape() async throws {
-        let protocolClass = StubURLProtocol.self
-        let session = URLSession(configuration: .ephemeral)
-        session.configuration.protocolClasses = [protocolClass]
-
+        var handled = false
         let service = ImageGenerationService(
             config: AzureImageConfig(apiKey: "TEST_KEY", endpoint: endpoint, deployment: deployment, apiVersion: apiVersion),
-            session: session
+            session: MockSession { request in
+                handled = true
+                XCTAssertEqual(request.url?.absoluteString, "\(self.endpoint)/openai/deployments/\(self.deployment)/images/generations?api-version=\(self.apiVersion)")
+                XCTAssertEqual(request.httpMethod, "POST")
+                XCTAssertEqual(request.value(forHTTPHeaderField: "Content-Type"), "application/json")
+                XCTAssertEqual(request.value(forHTTPHeaderField: "api-key"), "TEST_KEY")
+
+                if let body = request.vp_bodyData(),
+                   let json = try? JSONSerialization.jsonObject(with: body, options: []) as? [String: Any] {
+                    XCTAssertEqual(json["size"] as? String, "1024x1024")
+                    XCTAssertNil(json["response_format"], "response_format should not be sent to Azure")
+                    XCTAssertNotNil(json["prompt"] as? String)
+                    if let images = json["image"] as? [String] {
+                        XCTAssertEqual(images.count, 1)
+                        XCTAssertFalse(images[0].isEmpty)
+                    } else {
+                        XCTFail("image array missing")
+                    }
+                } else {
+                    XCTFail("Missing body")
+                }
+
+                let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+                let payload = ["data": [["b64_json": Self.sampleBase64()]]]
+                let data = try! JSONSerialization.data(withJSONObject: payload, options: [])
+                return (data, response)
+            }
         )
 
-        let expectation = expectation(description: "request captured")
-        protocolClass.requestHandler = { request in
-            XCTAssertEqual(request.url?.absoluteString, "\(self.endpoint)/openai/deployments/\(self.deployment)/images/generations?api-version=\(self.apiVersion)")
-            XCTAssertEqual(request.httpMethod, "POST")
-            XCTAssertEqual(request.value(forHTTPHeaderField: "Content-Type"), "application/json")
-            XCTAssertEqual(request.value(forHTTPHeaderField: "api-key"), "TEST_KEY")
-
-            if let body = request.httpBody,
-               let json = try? JSONSerialization.jsonObject(with: body, options: []) as? [String: Any] {
-                XCTAssertEqual(json["size"] as? String, "1024x1024")
-                XCTAssertEqual(json["response_format"] as? String, "base64_json")
-                XCTAssertNotNil(json["prompt"] as? String)
-                if let images = json["image"] as? [String] {
-                    XCTAssertEqual(images.count, 1)
-                    XCTAssertFalse(images[0].isEmpty)
-                } else {
-                    XCTFail("image array missing")
-                }
-            } else {
-                XCTFail("Missing body")
-            }
-
-            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
-            let payload = ["data": [["b64_json": Self.sampleBase64()]]]
-            let data = try! JSONSerialization.data(withJSONObject: payload, options: [])
-            expectation.fulfill()
-            return (response, data)
-        }
-
         _ = try await service.generatePortrait(from: Self.samplePlatformImage())
-        await fulfillment(of: [expectation], timeout: 2)
+        XCTAssertTrue(handled)
     }
 
     func testSuccessDecodesImage() async throws {
-        let (service, expectation) = try makeServiceReturning(status: 200, body: ["data": [["b64_json": Self.sampleBase64()]]])
+        let service = makeServiceReturning(status: 200, body: ["data": [["b64_json": Self.sampleBase64()]]])
         let image = try await service.generatePortrait(from: Self.samplePlatformImage())
         XCTAssertNotNil(image)
-        await fulfillment(of: [expectation], timeout: 2)
     }
 
     func testUnauthorizedMaps() async {
-        let (service, expectation) = try! makeServiceReturning(status: 401, body: ["error": ["message": "nope"]])
+        let service = makeServiceReturning(status: 401, body: ["error": ["message": "nope"]])
         await XCTAssertThrowsErrorAsync {
             _ = try await service.generatePortrait(from: Self.samplePlatformImage())
         } errorHandler: { error in
-            print("Unauthorized test error: \(error)")
-            defer { expectation.fulfill() }
             guard case ImageGenerationError.unauthorizedOrForbidden = error else {
                 XCTFail("Expected unauthorized, got \(error)")
                 return
             }
         }
-        await fulfillment(of: [expectation], timeout: 2)
     }
 
     func testDecodeFailure() async {
-        let (service, expectation) = try! makeServiceReturning(status: 200, body: ["data": [["b64_json": "%%%"]]])
+        let service = makeServiceReturning(status: 200, body: ["data": [["b64_json": "%%%"]]])
         await XCTAssertThrowsErrorAsync {
             _ = try await service.generatePortrait(from: Self.samplePlatformImage())
         } errorHandler: { error in
-            print("Decode failure error: \(error)")
-            defer { expectation.fulfill() }
             guard case ImageGenerationError.decodeFailed = error else {
                 XCTFail("Expected decodeFailed, got \(error)")
                 return
             }
         }
-        await fulfillment(of: [expectation], timeout: 2)
+    }
+
+    func testUnknownParameterMapsToClientSchemaError() async {
+        let service = makeServiceReturning(status: 400, body: ["error": ["code": "unknown_parameter", "message": "response_format not supported"]])
+        await XCTAssertThrowsErrorAsync {
+            _ = try await service.generatePortrait(from: Self.samplePlatformImage())
+        } errorHandler: { error in
+            guard case ImageGenerationError.clientSchemaError = error else {
+                XCTFail("Expected clientSchemaError, got \(error)")
+                return
+            }
+        }
     }
 
     // MARK: - Helpers
 
-    private func makeServiceReturning(status: Int, body: [String: Any]) throws -> (ImageGenerationService, XCTestExpectation) {
-        let protocolClass = StubURLProtocol.self
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.protocolClasses = [protocolClass]
-        let session = URLSession(configuration: configuration)
+    private func makeServiceReturning(status: Int, body: [String: Any]) -> ImageGenerationService {
+        let response = HTTPURLResponse(url: URL(string: "\(endpoint)/openai/deployments/\(deployment)/images/generations?api-version=\(apiVersion)")!, statusCode: status, httpVersion: nil, headerFields: nil)!
+        let data = try! JSONSerialization.data(withJSONObject: body, options: [])
 
-        let expectation = expectation(description: "request handled")
-        protocolClass.requestHandler = { request in
-            let response = HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil)!
-            let data = try! JSONSerialization.data(withJSONObject: body, options: [])
-            expectation.fulfill()
-            return (response, data)
-        }
-
-        let service = ImageGenerationService(
+        return ImageGenerationService(
             config: AzureImageConfig(apiKey: "TEST_KEY", endpoint: endpoint, deployment: deployment, apiVersion: apiVersion),
-            session: session
+            session: MockSession { _ in (data, response) }
         )
-        return (service, expectation)
     }
 
     private static func sampleBase64() -> String {
@@ -133,28 +121,15 @@ final class ImageGenerationServiceTests: XCTestCase {
     }
 }
 
-final class StubURLProtocol: URLProtocol {
-    static var requestHandler: ((URLRequest) throws -> (HTTPURLResponse, Data))?
-
-    override class func canInit(with request: URLRequest) -> Bool { true }
-    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
-
-    override func startLoading() {
-        guard let handler = StubURLProtocol.requestHandler else {
-            client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
-            return
-        }
-        do {
-            let (response, data) = try handler(request)
-            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-            client?.urlProtocol(self, didLoad: data)
-            client?.urlProtocolDidFinishLoading(self)
-        } catch {
-            client?.urlProtocol(self, didFailWithError: error)
-        }
+private final class MockSession: URLSessioning {
+    let handler: (URLRequest) throws -> (Data, URLResponse)
+    init(handler: @escaping (URLRequest) throws -> (Data, URLResponse)) {
+        self.handler = handler
     }
 
-    override func stopLoading() {}
+    func data(for request: URLRequest) async throws -> (Data, URLResponse) {
+        try handler(request)
+    }
 }
 
 extension XCTestCase {
@@ -164,6 +139,32 @@ extension XCTestCase {
             XCTFail("Expected throw")
         } catch {
             errorHandler(error)
+        }
+    }
+}
+
+private extension URLRequest {
+    func vp_bodyData() -> Data? {
+        if let body = httpBody { return body }
+        if let stream = httpBodyStream {
+            return Data(reading: stream)
+        }
+        return nil
+    }
+}
+
+private extension Data {
+    init?(reading input: InputStream) {
+        self.init()
+        input.open()
+        defer { input.close() }
+        let bufferSize = 1024
+        var buffer = [UInt8](repeating: 0, count: bufferSize)
+        while input.hasBytesAvailable {
+            let read = input.read(&buffer, maxLength: bufferSize)
+            if read < 0 { return nil }
+            if read == 0 { break }
+            append(buffer, count: read)
         }
     }
 }

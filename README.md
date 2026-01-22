@@ -1,86 +1,67 @@
 # Vanta Portrait
 
-Vanta Portrait is a SwiftUI camera app (macOS/iOS-ready) that turns a built-in camera into an AI-guided portrait flow. It streams a live preview, evaluates pose quality locally with Vision, guides the user with live text, then fires a countdown-based burst capture to surface the best frame. The experience is state-driven to keep capture, guidance, and reveal phases explicit as we prepare to add Azure image models for remote scoring.
+SwiftUI macOS/iOS camera app that guides the user into frame, runs a countdown-gated burst, and (optionally) sends the selected frame to Azure OpenAI Images for a processed portrait. The experience is driven by an explicit state machine to keep capture, guidance, and reveal phases predictable.
 
-## How it works (today)
+## What it does
+- Live AVFoundation preview with Vision-based pose/eye detection (center, tilt, stability, eyes-open as a hard gate).
+- ExperienceState flow: `idle → guiding → almostReady → capturing → revealing → resetting`, with countdown and eye-blink grace handled in the view model.
+- Burst capture picks the best frame; Azure image generation runs after capture and falls back to the original photo on failure.
+- Works on macOS and iOS with sandbox-friendly networking (macOS entitlements include outgoing network + camera).
+- UITest mode bypasses camera hardware and drives the flow with a bundled sample image and mock Azure responses.
 
-1. **CameraManager (AVFoundation)** powers the live preview, supplies frames for analysis, and captures burst stills.
-2. **PoseDetector (Vision)** extracts a face bounding box, tilt, yaw, and approximate eye openness from video frames.
-3. **StabilityTracker** maintains a rolling buffer of face centers and reports stability confidence.
-4. **GuidanceEngine** converts pose/stability into a readiness score plus guidance text; eyes-open remains a hard gate.
-5. **AppViewModel + ExperienceState** drive the flow (`idle → guiding → almostReady → capturing → revealing → resetting`) so capture commitment and reset hygiene are explicit.
-6. **SwiftUI views** render the preview, overlays, countdown, debug panel, and result view. Camera availability issues surface inline.
+## Setup & configuration
+- Requirements: macOS 15.6+ or iOS 18.6+, Xcode 16+ (macOS builds target macosx SDK).
+- Azure API key (preferred): export `AZURE_OPENAI_API_KEY` in your environment before launching or running `xcodebuild`.
+- Azure API key (fallback): create `Vanta Portrait/AppSecrets.swift` with the user-managed placeholder below (file is gitignored):
+  ```swift
+  // AppSecrets.swift
+  // User-managed configuration.
+  // IMPORTANT: Do not modify this file via Codex.
 
-Strict and flexible capture modes are available; non-eye constraints now act as confidence signals so the app can proceed once readiness is high enough.
-
-## Roadmap to Azure image models
-
-- Current builds are fully local (no networking).  
-- Future iterations will ship images and metadata to Azure-hosted models for aesthetic/compliance scoring and selection. The state model is structured to drop in that remote scoring step without altering UI contracts.
+  enum AppSecrets {
+      /// Paste your Azure OpenAI API key here for local development.
+      static let azureOpenAIKey: String = "<PASTE_API_KEY_HERE>"
+  }
+  ```
+- Azure endpoint config (hard-coded constants in `ImageGenerationService`):  
+  - Endpoint: `https://aistudio-foundry-east-us-2.cognitiveservices.azure.com`  
+  - Deployment: `gpt-image-1.5`  
+  - API version: `2024-02-01`  
+  - Request payload: `{ prompt, image: [base64], size: "1024x1024" }`
+- Permissions: grant camera access on first run. DEBUG builds print a network preflight log to help diagnose sandbox/DNS issues on macOS.
 
 ## Project layout
+- `Vanta Portrait/` — App sources (SwiftUI views, AppViewModel, CameraManager, GuidanceEngine, StabilityTracker, ImageGenerationService, entitlements).
+- `Vanta PortraitTests/` — Unit tests for the Azure client and app logic.
+- `Vanta PortraitUITests/` — UI/system tests that read status from a sandboxed JSON file while mocking Azure.
+- `Vanta Portrait.xcodeproj` — Xcode project, deployment targets (macOS 15.6 / iOS 18.6), and capabilities.
+- `Vanta-Portrait-Info.plist` — Shared Info.plist.
+- `AppSecrets.swift` — User-managed key file (gitignored; see above).
 
-```
-Vanta Portrait/
-├── AppViewModel.swift        // Experience state + capture/guidance flow
-├── CameraManager.swift       // AVCaptureSession setup, preview, burst capture
-├── CameraPreviewView.swift   // Platform preview layer wrapper
-├── ContentView.swift         // Main UI with preview, guidance, controls, overlays
-├── CountdownOverlay.swift    // Countdown overlay
-├── DebugPanelView.swift      // Optional metrics panel
-├── GuidanceEngine.swift      // Pose/stability → readiness score + guidance
-├── PoseDetector.swift        // Vision face/landmark pipeline
-├── ResultView.swift          // Best-frame display with save/retake
-├── StabilityTracker.swift    // Rolling stability/confidence
-└── Vanta_PortraitApp.swift   // App entry point
-```
-
-Assets and test targets live in their default Xcode folders.
-
-## Requirements
-
-- macOS 13+ (macOS target) or iOS 18.6+ (iOS target)
-- Xcode 15+ (or `xcodebuild` command line tools)
-- Camera permission granted on first run
-
-## Setup
-
-1. Clone or download this repository.
-2. Open `Vanta Portrait.xcodeproj` in Xcode, or work from Terminal in the repository root.
-3. Grant camera access when prompted.
-
-## Running the app
-
-### Xcode
-1. Open the project in Xcode.
-2. Select the **Vanta Portrait** target.
-3. Choose **My Mac** or an iOS simulator/device destination.
-4. Press **⌘R** to build and run.
-
-### Command line (macOS build)
-
-```bash
-xcodebuild -scheme "Vanta Portrait" -sdk macosx -destination 'platform=macOS' build
-```
-
-## Operating the app
-
-- **Preview & Guidance**: Keep your face centered/level as guided. Eyes-open is required; other constraints are advisory but influence readiness.
-- **Camera status banner**: If the app cannot access a camera (missing device, denied permissions, config errors), a banner explains the issue and disables capture until resolved.
-- **Strict vs Flexible**: Toggle the strict switch in the control bar or toolbar. Strict mode expects tighter pose/stability signals; flexible mode is more forgiving.
-- **Capture**: Click **Capture** or press Space. When the experience reaches `almostReady`, a 3…2…1 countdown runs and a burst (3–5 frames) fires automatically.
-- **Result view**: After the burst, the best frame appears with **Retake** and **Save to Pictures**. Retake runs through a reset state before guiding resumes.
-- **Debug Panel**: Toggle “Show Debug” to view readiness components (center, tilt, stability, eyes).
+## Running
+- Xcode: open `Vanta Portrait.xcodeproj`, select the **Vanta Portrait** scheme, choose **My Mac** or an iOS destination, then **⌘R**.
+- Command line (macOS build):
+  ```bash
+  xcodebuild -scheme "Vanta Portrait" -sdk macosx -destination 'platform=macOS' build
+  ```
 
 ## Testing
+- Unit tests (macOS):
+  ```bash
+  xcodebuild test -scheme "Vanta Portrait" -sdk macosx -destination 'platform=macOS'
+  ```
+- UI tests (macOS): same command above, or target-only:
+  ```bash
+  xcodebuild test -scheme "Vanta Portrait" -sdk macosx -destination 'platform=macOS' -only-testing:"Vanta PortraitUITests"
+  ```
+  UI tests launch with `-UITestMode` and mock Azure responses; they read/write a status JSON file in the app container specified by `UITestStatusFile`.
 
-Run the unit test target with:
-
-```bash
-xcodebuild test -scheme "Vanta Portrait" -sdk macosx -destination 'platform=macOS'
-```
+## Operating notes
+- Eyes-open is a hard gate for entering countdown and committing capture; other pose signals feed readiness but no longer block indefinitely.
+- Countdown freezes guidance text/score; if eyes are closed too long at commit, the app aborts cleanly back to guiding.
+- Azure errors surface a user-safe fallback message while keeping the original image visible. Debug logs include response details with the API key redacted.
 
 ## Troubleshooting
-
-- If the preview is blank, confirm camera permissions in **System Settings → Privacy & Security → Camera** (macOS) or **Settings → Privacy & Security → Camera** (iOS).
-- If `xcodebuild` cannot find a destination, pass an explicit destination such as `-destination 'platform=macOS,arch=arm64'` on Apple silicon.
+- Blank preview or blocked camera: check camera permissions in system settings.
+- Networking errors on macOS: confirm the app has outgoing network entitlement and a valid API key; DEBUG launch prints DNS/connectivity status to the console.
+- If `xcodebuild` cannot find a destination, pass `-destination 'platform=macOS,arch=arm64'` on Apple silicon.

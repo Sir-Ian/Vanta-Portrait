@@ -1,37 +1,67 @@
 import XCTest
 
-@MainActor
 final class PortraitUITests: XCTestCase {
-    func testProcessingSuccessShowsResult() throws {
+    func testProcessingSuccessShowsResult() {
+        let filename = statusFilename()
+        let statusURL = containerCachesURL(for: filename)
         let app = XCUIApplication()
         app.launchArguments += ["-UITestMode", "-MockAzureSuccess"]
+        app.launchEnvironment["UITestStatusFile"] = filename
         app.launch()
 
-        let processing = app.staticTexts["Processing portrait…"]
-        XCTAssertTrue(processing.waitForExistence(timeout: 2))
+        XCTAssertNotNil(waitForStatus(at: statusURL, timeout: 2) { $0.note == "processing" })
 
-        // After mock completes, processing message should clear
-        let cleared = processing.waitForDisappearance(timeout: 5)
-        XCTAssertTrue(cleared, "Processing message did not clear")
+        let finalStatus = waitForStatus(at: statusURL, timeout: 5) {
+            $0.note == "processed" && $0.imageTag == "processed" && $0.processingStatus == nil && $0.isProcessing == false
+        }
+        XCTAssertNotNil(finalStatus, "Processed status not observed")
     }
 
-    func testProcessingFailureShowsFallbackMessage() throws {
+    func testProcessingFailureShowsFallbackMessage() {
+        let filename = statusFilename()
+        let statusURL = containerCachesURL(for: filename)
         let app = XCUIApplication()
         app.launchArguments += ["-UITestMode", "-MockAzureFailure"]
+        app.launchEnvironment["UITestStatusFile"] = filename
         app.launch()
 
-        let processing = app.staticTexts["Processing portrait…"]
-        XCTAssertTrue(processing.waitForExistence(timeout: 2))
+        XCTAssertNotNil(waitForStatus(at: statusURL, timeout: 2) { $0.note == "processing" })
 
-        let fallback = app.staticTexts["Couldn’t reach the portrait service. Using the original photo."]
-        XCTAssertTrue(fallback.waitForExistence(timeout: 5))
+        let fallbackStatus = waitForStatus(at: statusURL, timeout: 5) {
+            $0.note == "fallback" && $0.imageTag == "original" && $0.processingStatus == "Couldn’t reach the portrait service. Using the original photo."
+        }
+        XCTAssertNotNil(fallbackStatus, "Fallback status not observed")
+    }
+
+    // MARK: - Helpers
+
+    private func waitForStatus(at url: URL, timeout: TimeInterval, predicate: (UITestStatusPayload) -> Bool) -> UITestStatusPayload? {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if let data = try? Data(contentsOf: url),
+               let status = try? JSONDecoder().decode(UITestStatusPayload.self, from: data),
+               predicate(status) {
+                return status
+            }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        }
+        return nil
+    }
+
+    private func statusFilename() -> String {
+        "uitest-status-\(UUID().uuidString).json"
+    }
+
+    private func containerCachesURL(for filename: String) -> URL {
+        let base = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Containers/com.Pro.Vanta-Portrait/Data")
+        return base.appendingPathComponent(filename)
     }
 }
 
-private extension XCUIElement {
-    func waitForDisappearance(timeout: TimeInterval) -> Bool {
-        let predicate = NSPredicate(format: "exists == false")
-        let expectation = XCTNSPredicateExpectation(predicate: predicate, object: self)
-        return XCTWaiter.wait(for: [expectation], timeout: timeout) == .completed
-    }
+private struct UITestStatusPayload: Codable {
+    let note: String
+    let processingStatus: String?
+    let isProcessing: Bool
+    let imageTag: String?
 }

@@ -5,6 +5,12 @@ import AppKit
 import UIKit
 #endif
 
+protocol URLSessioning {
+    func data(for request: URLRequest) async throws -> (Data, URLResponse)
+}
+
+extension URLSession: URLSessioning {}
+
 struct AzureImageConfig {
     /// Inject the real key securely at runtime (env/Keychain). Placeholder only.
     let apiKey: String // e.g. "<AZURE_OPENAI_API_KEY>"
@@ -35,6 +41,7 @@ enum ImageGenerationError: LocalizedError {
     case dnsBlockedOrHostNotFound
     case noInternet
     case unauthorizedOrForbidden
+    case clientSchemaError(String)
     case invalidResponse
     case decodeFailed
     case serviceError(String)
@@ -46,6 +53,7 @@ enum ImageGenerationError: LocalizedError {
         case .dnsBlockedOrHostNotFound: return "DNS lookup failed or host unreachable"
         case .noInternet: return "No internet connection"
         case .unauthorizedOrForbidden: return "Unauthorized request"
+        case .clientSchemaError(let message): return message
         case .invalidResponse: return "Invalid response"
         case .decodeFailed: return "Could not decode generated image"
         case .serviceError(let message): return message
@@ -55,12 +63,12 @@ enum ImageGenerationError: LocalizedError {
 
 final class ImageGenerationService: ImageGenerating {
     private let config: AzureImageConfig
-    private let session: URLSession
+    private let session: URLSessioning
     private let prompt: String = """
 Using the provided image of the subject as reference, create a clean, realistic studio portrait inspired by the visual conventions of new-graduate job-hunting photos. If a person is present, preserve the subject's facial features, proportions, and identity exactly as shown, without beautifying or altering their face. If not, if not, apply the same restrained studio lighting, neutral background, and formal framing to the object or scene. Present the subject in a centered, front-facing composition wearing conservative, entry-level business attire, with neat grooming and a neutral, polite expression. Use flat, even studio lighting that minimizes shadows and emphasizes clarity, paired with a plain light blue, pale gray, or white background. The framing should be tightly cropped, symmetrical, and formal, with a restrained, slightly earnest mood that reflects professionalism, sincerity, and readiness for a job.
 """
 
-    init(config: AzureImageConfig, session: URLSession? = nil) {
+    init(config: AzureImageConfig, session: URLSessioning? = nil) {
         self.config = config
         if let session {
             self.session = session
@@ -91,11 +99,11 @@ Using the provided image of the subject as reference, create a clean, realistic 
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(config.apiKey, forHTTPHeaderField: "api-key")
 
+        // Azure Images API always returns base64 in `data[].b64_json`; `response_format` is unsupported.
         let body: [String: Any] = [
             "prompt": prompt,
             "image": [base64Image],
-            "size": "1024x1024",
-            "response_format": "base64_json"
+            "size": "1024x1024"
         ]
 
         request.httpBody = try JSONSerialization.data(withJSONObject: body, options: [])
@@ -120,7 +128,15 @@ Using the provided image of the subject as reference, create a clean, realistic 
             case 401, 403:
                 throw ImageGenerationError.unauthorizedOrForbidden
             default:
-                if let message = AzureServiceError.decodeMessage(from: data) {
+                if let errorPayload = AzureServiceError.decode(from: data) {
+                    if errorPayload.code == "unknown_parameter" {
+                        throw ImageGenerationError.clientSchemaError(errorPayload.message ?? "Invalid request parameter")
+                    }
+                    if let message = errorPayload.message {
+                        throw ImageGenerationError.serviceError(message)
+                    }
+                    throw ImageGenerationError.invalidResponse
+                } else if let message = AzureServiceError.decodeMessage(from: data) { // backwards compatibility
                     throw ImageGenerationError.serviceError(message)
                 } else {
                     throw ImageGenerationError.invalidResponse
@@ -167,13 +183,21 @@ private struct ImageGenerationResponse: Decodable {
 
 private enum AzureServiceError {
     struct ErrorPayload: Decodable {
-        struct InnerError: Decodable { let message: String? }
+        struct InnerError: Decodable {
+            let code: String?
+            let message: String?
+        }
         let error: InnerError?
     }
 
     static func decodeMessage(from data: Data) -> String? {
         guard let decoded = try? JSONDecoder().decode(ErrorPayload.self, from: data) else { return nil }
         return decoded.error?.message
+    }
+
+    static func decode(from data: Data) -> (code: String?, message: String?)? {
+        guard let decoded = try? JSONDecoder().decode(ErrorPayload.self, from: data) else { return nil }
+        return (code: decoded.error?.code, message: decoded.error?.message)
     }
 }
 
